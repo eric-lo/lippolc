@@ -2,6 +2,7 @@
 #define __LIPP_H__
 
 #include "lipp_base.h"
+#include "concurrency.h"
 #include <stdint.h>
 #include <math.h>
 #include <limits>
@@ -33,6 +34,8 @@ typedef uint8_t bitmap_t;
 #if COLLECT_TIME
 #include <chrono>
 #endif
+
+
 
 template<class T, class P, bool USE_FMCD = true>
 class LIPP
@@ -109,10 +112,30 @@ public:
     void insert(const T& key, const P& value) {
         root = insert_tree(root, key, value);
     }
-    P at(const T& key, bool skip_existence_check = true) const {
+
+    P at(const T& key, bool skip_existence_check = true) {        
+        int restartCount = 0;
+        restart:
+        if (restartCount++)
+            yield(restartCount);
+        bool needRestart = false;
+
         Node* node = root;
+        //readlock not exactly "locking", but just use it, it is fine for not knowing the detail
+        uint64_t versionNode = node->readLockOrRestart(needRestart); //since lookup is ready only, so just use like rw-lock and "readlock" the node
+        if (needRestart || (node != root)) goto restart;
+
+        // set up for the traversal loop below
+        Node* parent = nullptr;
+        uint64_t versionParent;
 
         while (true) {
+
+            if (parent) {   //unless this is the 1st time (root), otherwise the child from the prev iteration would have already been locked before the end of the loop
+                parent->readUnlockOrRestart(versionParent, needRestart); //so it is already safe to unlock the parent
+                if (needRestart) goto restart;  //parent is contanimnated, restart search 
+            }  //end here today
+
             int pos = PREDICT_POS(node, key);
             if (BITMAP_GET(node->child_bitmap, pos) == 1) {
                 node = node->items[pos].comp.child;
@@ -130,6 +153,14 @@ public:
             }
         }
     }
+
+    void yield(int count) {
+      if (count > 3)
+        sched_yield();
+      else
+        _mm_pause();
+    }
+
     bool exists(const T& key) const {
         Node* node = root;
         while (true) {
@@ -294,7 +325,7 @@ private:
             Node* child;
         } comp;
     };
-    struct Node
+    struct Node : lippolc::OptLock
     {
         int is_two; // is special node for only two keys
         int build_size; // tree size (include sub nodes) when node created
