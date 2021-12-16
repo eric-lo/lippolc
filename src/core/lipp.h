@@ -446,7 +446,7 @@ private:
         int num_items; // size of items
         LinearModel<T> model;
         Item *items;
-        bitmap_t *none_bitmap;  // 1 means None, 0 means Data or Child
+        bitmap_t *none_bitmap;  // 1 means empty entry, 0 means Data or Child
         bitmap_t *child_bitmap; // 1 means Child. will always be 0 when none_bitmap is 1
     };
 
@@ -1012,9 +1012,6 @@ private:
             yield(restartCount);
         bool needRestart = false;
 
-        // if input sub-tree root conflict, restart
-        //uint64_t versionNode = _node->readLockOrRestart(needRestart);
-        //if (needRestart || (_node != root))
         if (_node != root)
             goto restart;
 
@@ -1025,22 +1022,31 @@ private:
 
         // for lock coupling
         Node *parent = nullptr;
-        //uint64_t versionParent;
+        uint64_t versionParent;
 
         for (Node *node = _node;;)
         {            
-            // **X-LOCK CURRENT NODE: might later on discuss if not edit this node, use r-lock?
-            node->writeLockOrRestart(needRestart); 
+            //R-lock this node
+            uint64_t versionNode = node->readLockOrRestart(needRestart); 
             if (needRestart)
             {
-                if (parent)
-                    parent->writeUnlock(); // if need restart, unlock parent as x-lock is still on parent
+                // if (parent)  //in theory we need to "unlock" parent, but since read unlock decides whether to restart, and we are restarting anyway here
+                //     parent->readUnlockOrRestart(versionParent, needRestart); 
                 goto restart;
             }
             if (!parent && (node != root))
             { // my parent is deleted by some others; I am obsolete already!  So, unlock myself and restart
-                node->writeUnlock();
+                //node->writeUnlock();
                 goto restart;
+            }
+            
+            //if I get the r-lock, shall unlock parent r-lock
+            if(parent)
+                    parent->readUnlockOrRestart(versionParent, needRestart);
+            if (needRestart) { 
+                    //in theory we need to "unlock" this node, but since read unlock decides whether to restart, and we are restarting anyway here
+                    //node->readUnlockOrRestart(); //physically no need to unlock parent because it 
+                    goto restart;
             }
 
             RT_ASSERT(path_size < MAX_DEPTH);
@@ -1049,27 +1055,48 @@ private:
             node->size++;
             node->num_inserts++;
             int pos = PREDICT_POS(node, key);
-            if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry, 0 means Data or Child
+            if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
             {
+                //upgrade to this node to X-lock
+                node->upgradeToWriteLockOrRestart(versionNode, needRestart);
+                if (needRestart) {goto restart;}
+                    
+                //safe already, as this case won't touch the parent, unlock parent
+                if(parent)
+                    parent->readUnlockOrRestart(versionParent, needRestart);
+                if (needRestart) 
+                {   
+                    node->writeUnlockObsolete(); //give up the X-lock of this node
+                    goto restart;
+                }                                
+                
                 BITMAP_CLEAR(node->none_bitmap, pos);
                 node->items[pos].comp.data.key = key;
                 node->items[pos].comp.data.value = value;
 
-                if(parent)
-                    parent->writeUnlock();  //safe already                
-                node->writeUnlock(); // X-UNLOCK
+                node->writeUnlock(); // X-UNLOCK this node
 
                 break;
             }
             else if (BITMAP_GET(node->child_bitmap, pos) == 0) //0 means existing entry has data already
             {
+                //upgrade to this node to X-lock
+                node->upgradeToWriteLockOrRestart(versionNode, needRestart);
+                if (needRestart) {goto restart;}
+                    
+                //safe already, unlock parent
+                if(parent)
+                    parent->readUnlockOrRestart(versionParent, needRestart);
+                if (needRestart) {
+                    node->writeUnlockObsolete();
+                    goto restart;
+                }                                
+
                 BITMAP_SET(node->child_bitmap, pos);
                 node->items[pos].comp.child = build_tree_two(key, value, node->items[pos].comp.data.key, node->items[pos].comp.data.value);
                 insert_to_data = 1;
 
-                if(parent)
-                    parent->writeUnlock(); //safe already
-                node->writeUnlock(); // X-UNLOCK
+                node->writeUnlock(); // X-UNLOCK this node
 
                 break;
             }
@@ -1077,15 +1104,13 @@ private:
             {
                 // set parent=<current inner node>, and set node=<child-node>
                 parent = node;
-                //versionParent = versionNode;
+                versionParent = versionNode;
 
                 node = node->items[pos].comp.child;
-                //parent->checkOrRestart(versionNode, needRestart); // to ensure nobody else has modified the new parent in between
-                // if (needRestart)
-                //     goto restart;
-                // node->writeLockOrRestart(needRestart); // if (new) parent lock is safe, try to lock node (the child)
-                // if (needRestart)
-                //     goto restart;
+                parent->checkOrRestart(versionParent, needRestart); // to ensure nobody else has modified the new parent in between
+                if (needRestart)
+                     goto restart;
+                
             }
         }
 

@@ -88,16 +88,6 @@ namespace lippolc {
       return ((typeVersionLockObsolete.load() & 0b10) == 0b10);
     }
 
-    uint64_t readLockOrRestart(bool &needRestart) {
-      uint64_t version;
-      version = typeVersionLockObsolete.load();
-      if (isLocked(version) || isObsolete(version)) {
-        _mm_pause();
-        needRestart = true;
-      }
-      return version;
-    }
-
     void writeLockOrRestart(bool &needRestart) {
       uint64_t version;
       version = readLockOrRestart(needRestart);
@@ -119,16 +109,19 @@ namespace lippolc {
       typeVersionLockObsolete.fetch_add(0b10);
     }
 
-    bool isObsolete(uint64_t version) {
-      return (version & 1) == 1;
-    }
-
-    bool isObsolete() {
-      return (typeVersionLockObsolete.load() & 1) == 1;
-    }
 
     void checkOrRestart(uint64_t startRead, bool &needRestart) const {
       readUnlockOrRestart(startRead, needRestart);
+    }
+
+    uint64_t readLockOrRestart(bool &needRestart) {
+      uint64_t version;
+      version = typeVersionLockObsolete.load();
+      if (isLocked(version) || isObsolete(version)) {
+        _mm_pause();
+        needRestart = true;
+      }
+      return version;
     }
 
     void readUnlockOrRestart(uint64_t startRead, bool &needRestart) const {
@@ -142,6 +135,15 @@ namespace lippolc {
     void labelObsolete() {
       typeVersionLockObsolete.store((typeVersionLockObsolete.load() | 1));
     }
+
+    bool isObsolete(uint64_t version) {
+      return (version & 1) == 1;
+    }
+
+    bool isObsolete() {
+      return (typeVersionLockObsolete.load() & 1) == 1;
+    }
+
   };
   // typedef tbb::spin_rw_mutex Alex_rw_mutex;
   // typedef OptLock Alex_mutex;
