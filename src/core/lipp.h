@@ -1066,7 +1066,7 @@ private:
                     parent->readUnlockOrRestart(versionParent, needRestart);
                 if (needRestart) 
                 {   
-                    node->writeUnlockObsolete(); //give up the X-lock of this node
+                    node->writeUnlock(); //give up the X-lock of this node
                     goto restart;
                 }                                
                 
@@ -1088,7 +1088,7 @@ private:
                 if(parent)
                     parent->readUnlockOrRestart(versionParent, needRestart);
                 if (needRestart) {
-                    node->writeUnlockObsolete();
+                    node->writeUnlock();
                     goto restart;
                 }                                
 
