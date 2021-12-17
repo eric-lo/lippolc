@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stack>
 #include <stdint.h>
+#include <thread>
 #include <vector>
 
 typedef uint8_t bitmap_t;
