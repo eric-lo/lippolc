@@ -403,7 +403,7 @@ private:
   };
 
   Node *root;
-  thread_local static std::stack<Node *> pending_two;
+  thread_local inline static std::stack<Node *> pending_two;
 
   std::allocator<Node> node_allocator;
   Node *new_nodes(int n) {
