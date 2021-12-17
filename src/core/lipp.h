@@ -402,7 +402,7 @@ private:
   };
 
   Node *root;
-  std::stack<Node *> pending_two;
+  thread_local std::stack<Node *> pending_two;
 
   std::allocator<Node> node_allocator;
   Node *new_nodes(int n) {
@@ -462,26 +462,24 @@ private:
     static_assert(BITMAP_WIDTH == 8);
 
     Node *node = NULL;
-    // if (pending_two.empty()) {
-    node = new_nodes(1);
-    node->is_two = 1;
-    node->build_size = 2;
-    node->size = 2;
-    node->fixed = 0;
-    node->num_inserts = node->num_insert_to_data = 0;
+    if (pending_two.empty()) {
+      node = new_nodes(1);
+      node->is_two = 1;
+      node->build_size = 2;
+      node->size = 2;
+      node->fixed = 0;
+      node->num_inserts = node->num_insert_to_data = 0;
 
-    node->num_items = 8;
-    node->items = new_items(node->num_items);
-    node->none_bitmap = new_bitmap(1);
-    node->child_bitmap = new_bitmap(1);
-    node->none_bitmap[0] = 0xff;
-    node->child_bitmap[0] = 0;
-    /*
-     } else {
-    node = pending_two.top();
-    pending_two.pop();
-     }
-     */
+      node->num_items = 8;
+      node->items = new_items(node->num_items);
+      node->none_bitmap = new_bitmap(1);
+      node->child_bitmap = new_bitmap(1);
+      node->none_bitmap[0] = 0xff;
+      node->child_bitmap[0] = 0;
+    } else {
+      node = pending_two.top();
+      pending_two.pop();
+    }
 
     const long double mid1_key = key1;
     const long double mid2_key = key2;
