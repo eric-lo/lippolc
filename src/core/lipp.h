@@ -9,9 +9,11 @@
 #include <math.h>
 #include <sstream>
 #include <stack>
+#include <list>
 #include <stdint.h>
 #include <thread>
 #include <vector>
+#include "omp.h"
 
 typedef uint8_t bitmap_t;
 #define BITMAP_WIDTH (sizeof(bitmap_t) * 8)
@@ -28,7 +30,7 @@ typedef uint8_t bitmap_t;
 #define RT_ASSERT(expr)                                                        \
   {                                                                            \
     if (!(expr)) {                                                             \
-      fprintf(stderr, "RT_ASSERT Error at %s:%d, `%s`\n", __FILE__, __LINE__,  \
+      fprintf(stderr, "Thread %d: RT_ASSERT Error at %s:%d, `%s` not hold!\n", omp_get_thread_num(), __FILE__, __LINE__,  \
               #expr);                                                          \
       exit(0);                                                                 \
     }                                                                          \
@@ -186,7 +188,7 @@ public:
           if (BITMAP_GET(node->none_bitmap, pos) == 1) {
             RT_ASSERT(false);
           } else if (BITMAP_GET(node->child_bitmap, pos) == 0) {
-            RT_ASSERT(node->items[pos].comp.data.key == key);
+            RT_ASSERT(node->items[pos].comp.data.key == key);  
             if (parent) { // unlock the parent
               parent->readUnlockOrRestart(
                   versionParent,
@@ -852,32 +854,71 @@ private:
   }
 
   void scan_and_destory_tree(Node *_root, T *keys, P *values,
-                             bool destory = true) {
+                             bool destory = false) { //turn to false and shall pass to epoch reclaim later because of multi-threading
+
+        int restartCount = 0;
+adjust:    
+        if (restartCount++)
+            yield(restartCount);
+
     typedef std::pair<int, Node *> Segment; // <begin, Node*>
     std::stack<Segment> s;
-
+    
+    std::list<Node*> lockedNodes;
+        
     s.push(Segment(0, _root));
+
+printf("Thread %d, scan_and_destroy: trial=%d\n", omp_get_thread_num(), restartCount);
+
     while (!s.empty()) {
       int begin = s.top().first;
       Node *node = s.top().second;
-      const int SHOULD_END_POS = begin + node->size;
-      s.pop();
+//printf("\n\nThread %d, processing a segment, begin=%d, node=%p\n", omp_get_thread_num(), begin, node);      
 
-      for (int i = 0; i < node->num_items; i++) {
-        if (BITMAP_GET(node->none_bitmap, i) == 0) {
-          if (BITMAP_GET(node->child_bitmap, i) == 0) {
+      bool needRestart = false;
+      node->writeLockOrRestart(needRestart);
+      if (needRestart) {
+        //release locks on all locked ancestors
+        for (auto &n : lockedNodes) {
+          n->writeUnlock();
+        }
+        printf("Thread %d, Xlock FAIL on node=%p\n", omp_get_thread_num(), node);
+        goto adjust;
+      }
+      //x-lock this node SUCCESS
+      lockedNodes.push_back(node);
+printf("Thread %d, Xlock OK on node=%p\n", omp_get_thread_num(), node);
+
+      const int SHOULD_END_POS = begin + node->size;
+//printf("Thread %d, SHOULD_END_POS (%d) computed as: begin (%d) + node->size (%d)\n", omp_get_thread_num(), SHOULD_END_POS, begin, node->size);      
+      s.pop();
+//printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(), node, node->num_items);
+      for (int i = 0; i < node->num_items; i++) { //the i-th entry of the node now
+
+        if (BITMAP_GET(node->none_bitmap, i) == 0) { //it has data/child; not empty entry
+          if (BITMAP_GET(node->child_bitmap, i) == 0) { //means it is a data
             keys[begin] = node->items[i].comp.data.key;
             values[begin] = node->items[i].comp.data.value;
+//            printf("Thread %d, collected 1 key from node %p\n", omp_get_thread_num(), node);            
             begin++;
           } else {
-            s.push(Segment(begin, node->items[i].comp.child));
-            begin += node->items[i].comp.child->size;
+            s.push(Segment(begin, node->items[i].comp.child)); //means it is a child
+//            printf("Thread %d, pushed <begin=%d, a subtree (with size %d) rooted at %p> to stack; curr->node size is: %d\n", omp_get_thread_num(), begin, node->items[i].comp.child->size, node->items[i].comp.child, node->size); 
+            begin += node->items[i].comp.child->size; 
+
+
           }
+//        printf("Thread %d, for this entry, advancing begin to %d\n", omp_get_thread_num(), begin);          
+        } else { //this i-th entry is empty
+//          printf("Thread %d, empty entry\n", omp_get_thread_num());          
         }
       }
+
+//printf("Thread %d, finish working on node %p: begin=%d; SHOULD_END_POS=%d\n", omp_get_thread_num(), node, begin, SHOULD_END_POS);
+
       RT_ASSERT(SHOULD_END_POS == begin);
 
-      if (destory) {
+      if (destory) {   //pass to memory reclaimation memory later; @BT
         if (node->is_two) {
           RT_ASSERT(node->build_size == 2);
           RT_ASSERT(node->num_items == 8);
@@ -914,105 +955,109 @@ private:
 
     // for lock coupling
     Node *parent = nullptr;
-    uint64_t versionParent;
+    //uint64_t versionParent;
 
     for (Node *node = _node;;) {
-      // R-lock this node
-      uint64_t versionNode = node->readLockOrRestart(needRestart);
+      // W-lock this node (as need to update its statistics)
+      node->writeLockOrRestart(needRestart);
       if (needRestart) {
-        // if (parent)  //in theory we need to "unlock" parent, but since read
-        // unlock decides whether to restart, and we are restarting anyway here
-        //     parent->readUnlockOrRestart(versionParent, needRestart);
+        if (parent)  
+          parent->writeUnlock();        
         goto restart;
       }
       if (!parent &&
           (node != root)) { // my parent is deleted by some others; I am
                             // obsolete already!  So, unlock myself and restart
-        // node->writeUnlock();
+        node->writeUnlock();
         goto restart;
       }
 
-      // if I get the r-lock, shall unlock parent r-lock
-      if (parent)
-        parent->readUnlockOrRestart(versionParent, needRestart);
-      if (needRestart) {
-        // in theory we need to "unlock" this node, but since read unlock
-        // decides whether to restart, and we are restarting anyway here
-        // node->readUnlockOrRestart(); //physically no need to unlock parent
-        // because it
-        goto restart;
-      }
+      // if I get the x-lock, shall unlock parent 
+      //printf("Thread %d, lock %p OK\n", omp_get_thread_num(), node);          
 
+      if (parent) {
+        parent->writeUnlock();
+        //printf("Thread %d, after lock %p OK, unlock parent %p\n", omp_get_thread_num(), node, parent);          
+      }
+        
+      
       RT_ASSERT(path_size < MAX_DEPTH);
       path[path_size++] = node;
 
-      node->size++;
-      node->num_inserts++;
-
+            
       int pos = PREDICT_POS(node, key);
+      node->size++; 
+      node->num_inserts++; 
+
       if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
       {
         // upgrade to this node to X-lock
-        node->upgradeToWriteLockOrRestart(versionNode, needRestart);
-        if (needRestart) {
-          goto restart;
-        }
-
-        // safe already, as this case won't touch the parent, unlock parent
-        if (parent)
-          parent->readUnlockOrRestart(versionParent, needRestart);
-        if (needRestart) {
-          node->writeUnlock(); // give up the X-lock of this node
-          goto restart;
-        }
-
+        //node->upgradeToWriteLockOrRestart(versionNode, needRestart);
+        //if (needRestart) {
+        //  goto restart;
+        //}
+      // safe already, as this case won't touch parent, unlock parent
+        // if (parent)
+        //   parent->readUnlockOrRestart(versionParent, needRestart);
+        // if (needRestart) {
+        //   node->writeUnlock(); // give up the X-lock of this node
+        //   goto restart;
+        // }        
+        
         BITMAP_CLEAR(node->none_bitmap, pos);
         node->items[pos].comp.data.key = key;
         node->items[pos].comp.data.value = value;
-
+      
         node->writeUnlock(); // X-UNLOCK this node
-
+//printf("Thread %d, unlock %p\n", omp_get_thread_num(), node);          
         break;
       } else if (BITMAP_GET(node->child_bitmap, pos) ==
                  0) // 0 means existing entry has data already
       {
         // upgrade to this node to X-lock
-        node->upgradeToWriteLockOrRestart(versionNode, needRestart);
-        if (needRestart) {
-          goto restart;
-        }
+        //node->upgradeToWriteLockOrRestart(versionNode, needRestart);
+        //if (needRestart) {
+        //  goto restart;
+        //}
 
-        // safe already, unlock parent
-        if (parent)
-          parent->readUnlockOrRestart(versionParent, needRestart);
-        if (needRestart) {
-          node->writeUnlock();
-          goto restart;
-        }
+        // safe already, as this case won't touch parent, unlock parent
+        // if (parent)
+        //   parent->readUnlockOrRestart(versionParent, needRestart);
+        // if (needRestart) {
+        //   node->writeUnlock();
+        //   goto restart;
+        // }
 
         BITMAP_SET(node->child_bitmap, pos);
         node->items[pos].comp.child =
             build_tree_two(key, value, node->items[pos].comp.data.key,
                            node->items[pos].comp.data.value);
         insert_to_data = 1;
-
+        
         node->writeUnlock(); // X-UNLOCK this node
-
+//printf("Thread %d, unlock %p\n", omp_get_thread_num(), node);          
         break;
       } else // 1 means has a child, need to go down and see
       {
         // set parent=<current inner node>, and set node=<child-node>
         parent = node;
-        versionParent = versionNode;
+        //versionParent = versionNode;
 
-        node = node->items[pos].comp.child;
-        parent->checkOrRestart(
-            versionParent, needRestart); // to ensure nobody else has modified
-                                         // the new parent in between
-        if (needRestart)
-          goto restart;
+        // parent->checkOrRestart(
+        //     versionParent, needRestart); // to ensure nobody else has modified
+        //                                  // the new parent in between
+        // if (needRestart)
+        //   goto restart;
+
+        node = node->items[pos].comp.child;      
+
+        //***** this case, never exit the for loop here, so no need to unlock****//
+        
+
       }
     }
+
+//***** so, when reaching here, no node is locked.
 
     for (int i = 0; i < path_size; i++) {
       path[i]->num_insert_to_data += insert_to_data;
@@ -1022,12 +1067,15 @@ private:
       Node *node = path[i];
       const int num_inserts = node->num_inserts;
       const int num_insert_to_data = node->num_insert_to_data;
-      // const bool need_rebuild = node->fixed == 0 && node->size >=
-      // node->build_size * 4 && node->size >= 64 && num_insert_to_data * 10 >=
-      // num_inserts;
-      const bool need_rebuild = false; // temporary disable this first, by Eric
+      const bool need_rebuild = node->fixed == 0 && node->size >=
+      node->build_size * 4 && node->size >= 64 && num_insert_to_data * 10 >=
+      num_inserts;
+      
+      //const bool need_rebuild = false; //temporary disable
 
       if (need_rebuild) {
+        
+        printf("Thread %d, insert key %d triggers adjust\n", omp_get_thread_num(), key);          
         const int ESIZE = node->size;
         T *keys = new T[ESIZE];
         P *values = new P[ESIZE];
@@ -1064,7 +1112,19 @@ private:
         path[i] = new_node;
         if (i > 0) {
           int pos = PREDICT_POS(path[i - 1], key);
+
+          int retryLockCount = 0;
+retryLock:
+          if (retryLockCount++)
+            yield(retryLockCount);
+          bool needRetry = false;
+
+          path[i - 1]->writeLockOrRestart(needRetry);
+          if (needRetry)
+            goto retryLock;
+
           path[i - 1]->items[pos].comp.child = new_node;
+          path[i - 1]->writeUnlock();
         }
 
         break;
