@@ -14,7 +14,7 @@ int main()
 
     #pragma omp parallel for schedule(static, 5)
     for(int i = 0; i < key_num; i++) {        
-        printf("Thread %d, insert %d\n", omp_get_thread_num(), i);  
+        printf("--Insert %d by Thread %d\n", i, omp_get_thread_num());  
         lipp.insert(i, i);        
         //mix write with read
         //if (i>5)

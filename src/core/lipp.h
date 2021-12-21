@@ -861,14 +861,15 @@ adjust:
         if (restartCount++)
             yield(restartCount);
 
+        if (restartCount>10)
+          exit(1);   
+
     typedef std::pair<int, Node *> Segment; // <begin, Node*>
     std::stack<Segment> s;
     
     std::list<Node*> lockedNodes;
         
     s.push(Segment(0, _root));
-
-printf("Thread %d, scan_and_destroy: trial=%d\n", omp_get_thread_num(), restartCount);
 
     while (!s.empty()) {
       int begin = s.top().first;
@@ -882,7 +883,7 @@ printf("Thread %d, scan_and_destroy: trial=%d\n", omp_get_thread_num(), restartC
         for (auto &n : lockedNodes) {
           n->writeUnlock();
         }
-        printf("Thread %d, Xlock FAIL on node=%p\n", omp_get_thread_num(), node);
+        printf("Thread %d, scan_and_destory: Xlock FAIL on node=%p, restartCount=%d\n", omp_get_thread_num(), node, restartCount);
         goto adjust;
       }
       //x-lock this node SUCCESS
@@ -890,32 +891,38 @@ printf("Thread %d, scan_and_destroy: trial=%d\n", omp_get_thread_num(), restartC
 printf("Thread %d, Xlock OK on node=%p\n", omp_get_thread_num(), node);
 
       const int SHOULD_END_POS = begin + node->size;
-//printf("Thread %d, SHOULD_END_POS (%d) computed as: begin (%d) + node->size (%d)\n", omp_get_thread_num(), SHOULD_END_POS, begin, node->size);      
+printf("Thread %d, SHOULD_END_POS (%d) computed as: begin (%d) + node->size (%d)\n", omp_get_thread_num(), SHOULD_END_POS, begin, node->size);      
       s.pop();
-//printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(), node, node->num_items);
+printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(), node, node->num_items);
       for (int i = 0; i < node->num_items; i++) { //the i-th entry of the node now
 
         if (BITMAP_GET(node->none_bitmap, i) == 0) { //it has data/child; not empty entry
           if (BITMAP_GET(node->child_bitmap, i) == 0) { //means it is a data
             keys[begin] = node->items[i].comp.data.key;
             values[begin] = node->items[i].comp.data.value;
-//            printf("Thread %d, collected 1 key from node %p\n", omp_get_thread_num(), node);            
+            printf("Thread %d, collected 1 key from node %p\n", omp_get_thread_num(), node);            
             begin++;
           } else {
             s.push(Segment(begin, node->items[i].comp.child)); //means it is a child
-//            printf("Thread %d, pushed <begin=%d, a subtree (with size %d) rooted at %p> to stack; curr->node size is: %d\n", omp_get_thread_num(), begin, node->items[i].comp.child->size, node->items[i].comp.child, node->size); 
+            printf("Thread %d, pushed <begin=%d, a subtree (with size %d) rooted at child %p> to stack; curr->node size is: %d\n", omp_get_thread_num(), begin, node->items[i].comp.child->size, node->items[i].comp.child, node->size); 
             begin += node->items[i].comp.child->size; 
 
 
           }
-//        printf("Thread %d, for this entry, advancing begin to %d\n", omp_get_thread_num(), begin);          
+        printf("Thread %d, for this entry, advancing begin to %d\n", omp_get_thread_num(), begin);          
         } else { //this i-th entry is empty
-//          printf("Thread %d, empty entry\n", omp_get_thread_num());          
+          printf("Thread %d, empty entry\n", omp_get_thread_num());          
         }
       }
 
-//printf("Thread %d, finish working on node %p: begin=%d; SHOULD_END_POS=%d\n", omp_get_thread_num(), node, begin, SHOULD_END_POS);
 
+      if (!(SHOULD_END_POS == begin))
+      {
+          printf("Error----scan-and-destory--");
+          printf("Thread %d, just finish working on node %p: begin=%d; node->size=%d, node->num_items=%d, SHOULD_END_POS=%d\n", 
+                    omp_get_thread_num(), node, begin, node->size, node->num_items, SHOULD_END_POS);
+          exit(1);
+      }
       RT_ASSERT(SHOULD_END_POS == begin);
 
       if (destory) {   //pass to memory reclaimation memory later; @BT
@@ -972,12 +979,12 @@ printf("Thread %d, Xlock OK on node=%p\n", omp_get_thread_num(), node);
         goto restart;
       }
 
-      // if I get the x-lock, shall unlock parent 
-      //printf("Thread %d, lock %p OK\n", omp_get_thread_num(), node);          
+      printf("Thread %d, lock %p OK\n", omp_get_thread_num(), node);          
 
+      // if I get the x-lock, shall unlock parent       
       if (parent) {
         parent->writeUnlock();
-        //printf("Thread %d, after lock %p OK, unlock parent %p\n", omp_get_thread_num(), node, parent);          
+        printf("Thread %d, unlock parent %p\n", omp_get_thread_num(), parent);          
       }
         
       
@@ -987,22 +994,12 @@ printf("Thread %d, Xlock OK on node=%p\n", omp_get_thread_num(), node);
             
       int pos = PREDICT_POS(node, key);
       node->size++; 
+      ///BUG obviously here, size++ repeated! but why?
+      printf("Thread %d, node %p->size++ = %d\n", omp_get_thread_num(), node, node->size);          
       node->num_inserts++; 
 
       if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
       {
-        // upgrade to this node to X-lock
-        //node->upgradeToWriteLockOrRestart(versionNode, needRestart);
-        //if (needRestart) {
-        //  goto restart;
-        //}
-      // safe already, as this case won't touch parent, unlock parent
-        // if (parent)
-        //   parent->readUnlockOrRestart(versionParent, needRestart);
-        // if (needRestart) {
-        //   node->writeUnlock(); // give up the X-lock of this node
-        //   goto restart;
-        // }        
         
         BITMAP_CLEAR(node->none_bitmap, pos);
         node->items[pos].comp.data.key = key;
@@ -1014,20 +1011,6 @@ printf("Thread %d, Xlock OK on node=%p\n", omp_get_thread_num(), node);
       } else if (BITMAP_GET(node->child_bitmap, pos) ==
                  0) // 0 means existing entry has data already
       {
-        // upgrade to this node to X-lock
-        //node->upgradeToWriteLockOrRestart(versionNode, needRestart);
-        //if (needRestart) {
-        //  goto restart;
-        //}
-
-        // safe already, as this case won't touch parent, unlock parent
-        // if (parent)
-        //   parent->readUnlockOrRestart(versionParent, needRestart);
-        // if (needRestart) {
-        //   node->writeUnlock();
-        //   goto restart;
-        // }
-
         BITMAP_SET(node->child_bitmap, pos);
         node->items[pos].comp.child =
             build_tree_two(key, value, node->items[pos].comp.data.key,
@@ -1041,16 +1024,9 @@ printf("Thread %d, Xlock OK on node=%p\n", omp_get_thread_num(), node);
       {
         // set parent=<current inner node>, and set node=<child-node>
         parent = node;
-        //versionParent = versionNode;
-
-        // parent->checkOrRestart(
-        //     versionParent, needRestart); // to ensure nobody else has modified
-        //                                  // the new parent in between
-        // if (needRestart)
-        //   goto restart;
-
+printf("Thread %d, go down the tree, before node=%p\n", omp_get_thread_num(), node);          
         node = node->items[pos].comp.child;      
-
+printf("Thread %d, go down the tree, now node=%p\n", omp_get_thread_num(), node);
         //***** this case, never exit the for loop here, so no need to unlock****//
         
 
@@ -1110,19 +1086,23 @@ printf("Thread %d, Xlock OK on node=%p\n", omp_get_thread_num(), node);
         delete[] values;
 
         path[i] = new_node;
-        if (i > 0) {
-          int pos = PREDICT_POS(path[i - 1], key);
+        if (i > 0) {          
 
           int retryLockCount = 0;
 retryLock:
           if (retryLockCount++)
             yield(retryLockCount);
+
+          int pos = PREDICT_POS(path[i - 1], key);
+  
           bool needRetry = false;
 
           path[i - 1]->writeLockOrRestart(needRetry);
-          if (needRetry)
+          if (needRetry) {
+            printf("Thread %d, final step of adjust, obtain parent %p lock FAIL \n", omp_get_thread_num(), path[i - 1]);  
             goto retryLock;
-
+          }            
+          printf("Thread %d, final step of adjust, obtain parent %p lock OK, now give the adjusted tree to parent \n", omp_get_thread_num(), path[i - 1]);  
           path[i - 1]->items[pos].comp.child = new_node;
           path[i - 1]->writeUnlock();
         }
