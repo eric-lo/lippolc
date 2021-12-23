@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 #include "omp.h"
+#include <atomic>
 
 typedef uint8_t bitmap_t;
 #define BITMAP_WIDTH (sizeof(bitmap_t) * 8)
@@ -34,6 +35,28 @@ typedef uint8_t bitmap_t;
               #expr);                                                          \
       exit(0);                                                                 \
     }                                                                          \
+  }
+
+// runtime debug
+#define RESET   "\033[0m"
+#define RED     "\033[31m"      /* Red */
+#define GREEN   "\033[32m"      /* Green */
+#define YELLOW  "\033[33m"      /* Yellow */
+#define BLUE    "\033[34m"      /* Blue */
+#define MAGENTA "\033[35m"      /* Magenta */
+#define CYAN    "\033[36m"      /* Cyan */
+#define WHITE   "\033[37m"      /* White */
+
+//if debug mode on, set if to true
+#define RT_DEBUG(msg, ...) \
+  if (true) { \
+    if (omp_get_thread_num()==0) {  \
+      printf(GREEN "T%d: " msg RESET"\n", omp_get_thread_num(), __VA_ARGS__); \
+    } else if (omp_get_thread_num()==1) {  \
+      printf(YELLOW "\t\t\tT%d: " msg RESET"\n", omp_get_thread_num(), __VA_ARGS__); \
+    } else { \
+      printf(BLUE "\t\t\t\t\t\tT%d: " msg RESET"\n", omp_get_thread_num(), __VA_ARGS__); \
+    } \
   }
 
 #define COLLECT_TIME 0
@@ -113,7 +136,10 @@ public:
 
   void insert(const V &v) { insert(v.first, v.second); }
   void insert(const T &key, const P &value) {
-    root = insert_tree(root, key, value);
+    //root = insert_tree(root, key, value);
+    bool state = insert_tree(key, value);
+    RT_DEBUG("Insert_tree(%d): success/fail? %d", key, state);
+    
   }
 
   P at(const T &key, bool skip_existence_check = true) {
@@ -393,10 +419,12 @@ private:
   struct Node : lippolc::OptLock {
     int is_two;     // is special node for only two keys
     int build_size; // tree size (include sub nodes) when node created
-    int size;       // current tree size (include sub nodes)
+    std::atomic<int> size;       // current subtree size 
+    //int size;
     int fixed;      // fixed node will not trigger rebuild
     int num_inserts, num_insert_to_data;
-    int num_items; // size of items
+    std::atomic<int> num_items; // number of slots
+    //int num_items;
     LinearModel<T> model;
     Item *items;
     bitmap_t *none_bitmap; // 1 means empty entry, 0 means Data or Child
@@ -405,6 +433,7 @@ private:
   };
 
   Node *root;
+  int adjustsuccess=0;
   thread_local inline static std::stack<Node *> pending_two;
 
   std::allocator<Node> node_allocator;
@@ -452,7 +481,6 @@ private:
     BITMAP_SET(node->none_bitmap, 0);
     node->child_bitmap = new_bitmap(1);
     node->child_bitmap[0] = 0;
-
     return node;
   }
   /// build a tree with two keys
@@ -680,6 +708,7 @@ private:
         node->size = size;
         node->fixed = 0;
         node->num_inserts = node->num_insert_to_data = 0;
+        
 
         // FMCD method
         // Here the implementation is a little different with Algorithm 1 in our
@@ -853,78 +882,95 @@ private:
     }
   }
 
-  void scan_and_destory_tree(Node *_root, T *keys, P *values,
+  bool scan_and_destory_tree(Node *_subroot, T *keys, P *values,
                              bool destory = false) { //turn to false and shall pass to epoch reclaim later because of multi-threading
-
-        int restartCount = 0;
-adjust:    
-        if (restartCount++)
-            yield(restartCount);
-
-        if (restartCount>10)
-          exit(1);   
-
-    typedef std::pair<int, Node *> Segment; // <begin, Node*>
-    std::stack<Segment> s;
+          
     
+    std::list<Node*> bfs;
     std::list<Node*> lockedNodes;
-        
-    s.push(Segment(0, _root));
 
-    while (!s.empty()) {
-      int begin = s.top().first;
-      Node *node = s.top().second;
-//printf("\n\nThread %d, processing a segment, begin=%d, node=%p\n", omp_get_thread_num(), begin, node);      
+    RT_DEBUG("ADJUST: PHASE 1: BFS all sub tree locks rooted at %p, with %d keys", _subroot, _subroot->size.load());
+    
+    bfs.push_back(_subroot);
+
+    while (!bfs.empty()) {
+      Node *node = bfs.front();
+      bfs.pop_front();
 
       bool needRestart = false;
       node->writeLockOrRestart(needRestart);
       if (needRestart) {
         //release locks on all locked ancestors
+        RT_DEBUG("ADJUST: Xlock %p fail, unlocking all locked", node);
         for (auto &n : lockedNodes) {
           n->writeUnlock();
         }
-        printf("Thread %d, scan_and_destory: Xlock FAIL on node=%p, restartCount=%d\n", omp_get_thread_num(), node, restartCount);
-        goto adjust;
+        
+        return false;
       }
       //x-lock this node SUCCESS
       lockedNodes.push_back(node);
-printf("Thread %d, Xlock OK on node=%p\n", omp_get_thread_num(), node);
+      
+      RT_DEBUG("ADJUST: Xlock OK on node=%p", node);
+
+      for (int i = 0; i < node->num_items; i++) { //the i-th entry of the node now
+
+        if (BITMAP_GET(node->none_bitmap, i) == 0) { //it has data/child; not empty entry
+          if (BITMAP_GET(node->child_bitmap, i) == 1) { //means it is a child
+            bfs.push_back(node->items[i].comp.child);             
+            RT_DEBUG("ADJUST: BFS pushed to stack %p", node->items[i].comp.child);
+          }
+         }
+      }
+    }//end while
+
+    
+    RT_DEBUG("ADJUST: BFS locks all granted. **PHASE 2: now", 0); //as it must contain at least 1 arg after comma
+    typedef std::pair<int, Node *> Segment; // <begin, Node*>
+    std::stack<Segment> s;
+    s.push(Segment(0, _subroot));
+
+    while (!s.empty()) {
+      int begin = s.top().first;
+      Node *node = s.top().second;
 
       const int SHOULD_END_POS = begin + node->size;
-printf("Thread %d, SHOULD_END_POS (%d) computed as: begin (%d) + node->size (%d)\n", omp_get_thread_num(), SHOULD_END_POS, begin, node->size);      
+      RT_DEBUG("ADJUST: collecting keys at %p, SD_END_POS (%d)= begin (%d) + size (%d)", node, SHOULD_END_POS, begin, node->size.load());      
       s.pop();
-printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(), node, node->num_items);
+      
+      int tmpnumkey=0;
+
       for (int i = 0; i < node->num_items; i++) { //the i-th entry of the node now
 
         if (BITMAP_GET(node->none_bitmap, i) == 0) { //it has data/child; not empty entry
           if (BITMAP_GET(node->child_bitmap, i) == 0) { //means it is a data
             keys[begin] = node->items[i].comp.data.key;
-            values[begin] = node->items[i].comp.data.value;
-            printf("Thread %d, collected 1 key from node %p\n", omp_get_thread_num(), node);            
-            begin++;
+            values[begin] = node->items[i].comp.data.value;            
+            begin++;            
+            tmpnumkey++;
           } else {
+            RT_DEBUG("ADJUST: so far %d keys collected in this node", tmpnumkey);
             s.push(Segment(begin, node->items[i].comp.child)); //means it is a child
-            printf("Thread %d, pushed <begin=%d, a subtree (with size %d) rooted at child %p> to stack; curr->node size is: %d\n", omp_get_thread_num(), begin, node->items[i].comp.child->size, node->items[i].comp.child, node->size); 
+            RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at child %p> of size %d to stack", begin, node->items[i].comp.child, node->items[i].comp.child->size.load()); 
             begin += node->items[i].comp.child->size; 
+            RT_DEBUG("ADJUST: begin is updated to=%d", begin); 
 
-
-          }
-        printf("Thread %d, for this entry, advancing begin to %d\n", omp_get_thread_num(), begin);          
+          }        
         } else { //this i-th entry is empty
-          printf("Thread %d, empty entry\n", omp_get_thread_num());          
+          
         }
       }
-
+      
 
       if (!(SHOULD_END_POS == begin))
-      {
-          printf("Error----scan-and-destory--");
-          printf("Thread %d, just finish working on node %p: begin=%d; node->size=%d, node->num_items=%d, SHOULD_END_POS=%d\n", 
-                    omp_get_thread_num(), node, begin, node->size, node->num_items, SHOULD_END_POS);
-          exit(1);
+      {          
+          RT_DEBUG("ADJUST Err: just finish working on %p: begin=%d; node->size=%d, node->num_items=%d, SHOULD_END_POS=%d", 
+                    node, begin, node->size.load(), node->num_items.load(), SHOULD_END_POS);
+          //show();
+          RT_ASSERT(false);
       }
       RT_ASSERT(SHOULD_END_POS == begin);
-
+          
       if (destory) {   //pass to memory reclaimation memory later; @BT
         if (node->is_two) {
           RT_ASSERT(node->build_size == 2);
@@ -942,18 +988,22 @@ printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(),
           delete_nodes(node, 1);
         }
       }
-    }
-  }
+    } //end while
+    return true;
+  }//end scan_and_destory
 
-  Node *insert_tree(Node *_node, const T &key, const P &value) {
+  //Node* insert_tree(Node *_node, const T &key, const P &value) {
+  bool insert_tree(const T &key, const P &value) {  
     int restartCount = 0;
   restart:
     if (restartCount++)
       yield(restartCount);
     bool needRestart = false;
 
-    if (_node != root)
-      goto restart;
+    //if (_node != root)
+    //   goto restart;
+    if (restartCount % 1000==1)
+      RT_DEBUG("Insert_tree (%d) restartCount=%d", key, restartCount);
 
     constexpr int MAX_DEPTH = 128;
     Node *path[MAX_DEPTH];
@@ -964,10 +1014,13 @@ printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(),
     Node *parent = nullptr;
     //uint64_t versionParent;
 
-    for (Node *node = _node;;) {
-      // W-lock this node (as need to update its statistics)
+    //for (Node *node = _node;;) {
+    for (Node *node = root;;) {
+
       node->writeLockOrRestart(needRestart);
       if (needRestart) {
+        //if (restartCount % 1000==1)
+            RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d", node, parent, restartCount);        
         if (parent)  
           parent->writeUnlock();        
         goto restart;
@@ -979,12 +1032,12 @@ printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(),
         goto restart;
       }
 
-      printf("Thread %d, lock %p OK\n", omp_get_thread_num(), node);          
-
+      //RT_DEBUG("Xlock %p OK", node);          
+      // RT_ASSERT(parent == node);
       // if I get the x-lock, shall unlock parent       
       if (parent) {
         parent->writeUnlock();
-        printf("Thread %d, unlock parent %p\n", omp_get_thread_num(), parent);          
+        //RT_DEBUG("Unlock parent %p", parent);          
       }
         
       
@@ -993,11 +1046,7 @@ printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(),
 
             
       int pos = PREDICT_POS(node, key);
-      node->size++; 
-      ///BUG obviously here, size++ repeated! but why?
-      printf("Thread %d, node %p->size++ = %d\n", omp_get_thread_num(), node, node->size);          
-      node->num_inserts++; 
-
+      
       if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
       {
         
@@ -1005,8 +1054,17 @@ printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(),
         node->items[pos].comp.data.key = key;
         node->items[pos].comp.data.value = value;
       
-        node->writeUnlock(); // X-UNLOCK this node
-//printf("Thread %d, unlock %p\n", omp_get_thread_num(), node);          
+        for (int i = 0; i < path_size; i++) {
+          path[i]->num_insert_to_data += insert_to_data;
+          path[i]->num_inserts++; 
+          path[i]->size++;   
+          RT_DEBUG("Post insert(%d): update per node stat: %p size=%d, num_insert=%d, num_insert_to_data=%d", 
+          key, path[i], path[i]->size.load(), path[i]->num_inserts, path[i]->num_insert_to_data);
+        }  
+        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked, other threads can't carry out adjust
+        RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
+
+        
         break;
       } else if (BITMAP_GET(node->child_bitmap, pos) ==
                  0) // 0 means existing entry has data already
@@ -1017,16 +1075,24 @@ printf("Thread %d, working on node %p who has %d slots\n", omp_get_thread_num(),
                            node->items[pos].comp.data.value);
         insert_to_data = 1;
         
-        node->writeUnlock(); // X-UNLOCK this node
-//printf("Thread %d, unlock %p\n", omp_get_thread_num(), node);          
+        for (int i = 0; i < path_size; i++) {
+          path[i]->num_insert_to_data += insert_to_data;
+          path[i]->num_inserts++; 
+          path[i]->size++;   
+          RT_DEBUG("Post insert(%d): update per node stat: %p size=%d, num_insert=%d, num_insert_to_data=%d", 
+          key, path[i], path[i]->size.load(), path[i]->num_inserts, path[i]->num_insert_to_data);
+        }
+
+        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked, other threads can't carry out adjust
+        RT_DEBUG("New child %p (of size %d) created at %p and Unlocked", node->items[pos].comp.child, 
+        node->items[pos].comp.child->size.load(),
+        node);          
         break;
       } else // 1 means has a child, need to go down and see
       {
         // set parent=<current inner node>, and set node=<child-node>
         parent = node;
-printf("Thread %d, go down the tree, before node=%p\n", omp_get_thread_num(), node);          
         node = node->items[pos].comp.child;      
-printf("Thread %d, go down the tree, now node=%p\n", omp_get_thread_num(), node);
         //***** this case, never exit the for loop here, so no need to unlock****//
         
 
@@ -1035,9 +1101,8 @@ printf("Thread %d, go down the tree, now node=%p\n", omp_get_thread_num(), node)
 
 //***** so, when reaching here, no node is locked.
 
-    for (int i = 0; i < path_size; i++) {
-      path[i]->num_insert_to_data += insert_to_data;
-    }
+    
+    
 
     for (int i = 0; i < path_size; i++) {
       Node *node = path[i];
@@ -1049,9 +1114,8 @@ printf("Thread %d, go down the tree, now node=%p\n", omp_get_thread_num(), node)
       
       //const bool need_rebuild = false; //temporary disable
 
-      if (need_rebuild) {
-        
-        printf("Thread %d, insert key %d triggers adjust\n", omp_get_thread_num(), key);          
+      if (need_rebuild) {        
+
         const int ESIZE = node->size;
         T *keys = new T[ESIZE];
         P *values = new P[ESIZE];
@@ -1059,7 +1123,13 @@ printf("Thread %d, go down the tree, now node=%p\n", omp_get_thread_num(), node)
 #if COLLECT_TIME
         auto start_time_scan = std::chrono::high_resolution_clock::now();
 #endif
-        scan_and_destory_tree(node, keys, values);
+        bool collectKey_success = scan_and_destory_tree(node, keys, values);
+        if (!collectKey_success) {//this thread failed scan_and_destory because of race
+          delete[] keys;
+          delete[] values;
+          RT_DEBUG("collectKey for adjusting node %p -- one Xlock fails; quit rebuild", node);
+          break; //give up rebuild on this node (most likely other threads have done it for you already)
+        }
 #if COLLECT_TIME
         auto end_time_scan = std::chrono::high_resolution_clock::now();
         auto duration_scan = end_time_scan - start_time_scan;
@@ -1085,6 +1155,8 @@ printf("Thread %d, go down the tree, now node=%p\n", omp_get_thread_num(), node)
         delete[] keys;
         delete[] values;
 
+        RT_DEBUG("Final step of adjust, try to update parent/root, new node is %p", node);  
+        
         path[i] = new_node;
         if (i > 0) {          
 
@@ -1099,20 +1171,25 @@ retryLock:
 
           path[i - 1]->writeLockOrRestart(needRetry);
           if (needRetry) {
-            printf("Thread %d, final step of adjust, obtain parent %p lock FAIL \n", omp_get_thread_num(), path[i - 1]);  
+            RT_DEBUG("Final step of adjust, obtain parent %p lock FAIL, retry", path[i - 1]);  
             goto retryLock;
           }            
-          printf("Thread %d, final step of adjust, obtain parent %p lock OK, now give the adjusted tree to parent \n", omp_get_thread_num(), path[i - 1]);  
+          RT_DEBUG("Final step of adjust, obtain parent %p lock OK, now give the adjusted tree to parent", path[i - 1]);  
           path[i - 1]->items[pos].comp.child = new_node;
           path[i - 1]->writeUnlock();
+          adjustsuccess++;
+          RT_DEBUG("Adjusted success=%d", adjustsuccess);  
+        } else { //new node is the root, need to update it
+          root = new_node;
         }
 
-        break;
-      }
-    }
-
-    return path[0];
-  }
+        break; //break out for the for loop
+      } //end REBUILD
+    }//end for
+    
+    //return path[0];
+    return true;
+  } //end of insert_tree
 };
 
 #endif // __LIPP_H__
