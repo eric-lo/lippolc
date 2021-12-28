@@ -968,11 +968,11 @@ private:
             //            RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at
             //            child %p> of "
             //                     "size %d to stack",
-                     begin, node->items[i].comp.child,
-                     node->items[i].comp.child->size.load());
-                     begin += node->items[i].comp.child->size;
-                     //            RT_DEBUG("ADJUST: begin is updated to=%d",
-                     //            begin);
+            //         begin, node->items[i].comp.child,
+            //         node->items[i].comp.child->size.load());
+            begin += node->items[i].comp.child->size;
+            //            RT_DEBUG("ADJUST: begin is updated to=%d",
+            //            begin);
           }
         } else { // this i-th entry is empty
         }
