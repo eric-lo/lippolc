@@ -49,7 +49,7 @@ typedef uint8_t bitmap_t;
 
 // if debug mode on, set if to true
 #define RT_DEBUG(msg, ...)                                                     \
-  if (true) {                                                                  \
+  if (false) {                                                                 \
     if (omp_get_thread_num() == 0) {                                           \
       printf(GREEN "T%d: " msg RESET "\n", omp_get_thread_num(), __VA_ARGS__); \
     } else if (omp_get_thread_num() == 1) {                                    \
