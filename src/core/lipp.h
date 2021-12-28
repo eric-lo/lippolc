@@ -882,11 +882,10 @@ private:
     }
   }
 
-  bool
-  scan_and_destory_tree(Node *_subroot, T *keys, P *values,
-                        Node *_locked_node bool destory =
-                            false) { // turn to false and shall pass to epoch
-                                     // reclaim later because of multi-threading
+  bool scan_and_destory_tree(
+      Node *_subroot, T *keys, P *values, Node *_locked_node,
+      bool destory = false) { // turn to false and shall pass to epoch
+                              // reclaim later because of multi-threading
 
     std::list<Node *> bfs;
     std::list<Node *> lockedNodes;
