@@ -49,7 +49,7 @@ typedef uint8_t bitmap_t;
 
 // if debug mode on, set if to true
 #define RT_DEBUG(msg, ...)                                                     \
-  if (true) {                                                                  \
+  if (false) {                                                                 \
     if (omp_get_thread_num() == 0) {                                           \
       printf(GREEN "T%d: " msg RESET "\n", omp_get_thread_num(), __VA_ARGS__); \
     } else if (omp_get_thread_num() == 1) {                                    \
@@ -882,10 +882,11 @@ private:
     }
   }
 
-  bool scan_and_destory_tree(
-      Node *_subroot, T *keys, P *values,
-      bool destory = false) { // turn to false and shall pass to epoch reclaim
-                              // later because of multi-threading
+  bool
+  scan_and_destory_tree(Node *_subroot, T *keys, P *values,
+                        Node *_locked_node bool destory =
+                            false) { // turn to false and shall pass to epoch
+                                     // reclaim later because of multi-threading
 
     std::list<Node *> bfs;
     std::list<Node *> lockedNodes;
@@ -900,19 +901,21 @@ private:
       Node *node = bfs.front();
       bfs.pop_front();
 
-      bool needRestart = false;
-      node->writeLockOrRestart(needRestart);
-      if (needRestart) {
-        // release locks on all locked ancestors
-        // RT_DEBUG("ADJUST: Xlock %p fail, unlocking all locked", node);
-        for (auto &n : lockedNodes) {
-          n->writeUnlock();
-        }
+      if (node != _locked_node) {
+        bool needRestart = false;
+        node->writeLockOrRestart(needRestart);
+        if (needRestart) {
+          // release locks on all locked ancestors
+          // RT_DEBUG("ADJUST: Xlock %p fail, unlocking all locked", node);
+          for (auto &n : lockedNodes) {
+            n->writeUnlock();
+          }
 
-        return false;
+          return false;
+        }
+        // x-lock this node SUCCESS
+        lockedNodes.push_back(node);
       }
-      // x-lock this node SUCCESS
-      lockedNodes.push_back(node);
 
       // RT_DEBUG("ADJUST: Xlock OK on node=%p", node);
 
@@ -1079,8 +1082,9 @@ private:
           // path[i]->size.load(), path[i]->num_inserts,
           // path[i]->num_insert_to_data);
         }
-        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
-                             // other threads can't carry out adjust
+        // node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is
+        // locked,
+        //  other threads can't carry out adjust
         // RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
         break;
       } else if (BITMAP_GET(node->child_bitmap, pos) ==
@@ -1104,8 +1108,8 @@ private:
           //                   path[i]->num_insert_to_data);
         }
 
-        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
-                             // other threads can't carry out adjust
+        // node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is
+        // locked, other threads can't carry out adjust
         //        RT_DEBUG("New child %p (of size %d) created at %p and
         //        Unlocked",
         //                 node->items[pos].comp.child,
@@ -1122,7 +1126,7 @@ private:
     }
 
     //***** so, when reaching here, no node is locked.
-
+    bool rebuilt = false;
     for (int i = 0; i < path_size; i++) {
       Node *node = path[i];
       const int num_inserts = node->num_inserts;
@@ -1132,7 +1136,7 @@ private:
           node->size >= 64 && num_insert_to_data * 10 >= num_inserts;
 
       // const bool need_rebuild = false; //temporary disable
-
+      bool rebuilt = false;
       if (need_rebuild) {
 
         const int ESIZE = node->size;
@@ -1142,7 +1146,8 @@ private:
 #if COLLECT_TIME
         auto start_time_scan = std::chrono::high_resolution_clock::now();
 #endif
-        bool collectKey_success = scan_and_destory_tree(node, keys, values);
+        bool collectKey_success =
+            scan_and_destory_tree(node, keys, values, path[path_size - 1]);
         if (!collectKey_success) { // this thread failed scan_and_destory
                                    // because of race
           delete[] keys;
@@ -1196,8 +1201,9 @@ private:
 
           path[i - 1]->writeLockOrRestart(needRetry);
           if (needRetry) {
-            RT_DEBUG("Final step of adjust, obtain parent %p lock FAIL, retry",
-                     path[i - 1]);
+            // RT_DEBUG("Final step of adjust, obtain parent %p lock FAIL,
+            // retry",
+            //          path[i - 1]);
             goto retryLock;
           }
           RT_DEBUG("Final step of adjust, obtain parent %p lock OK, now give "
@@ -1205,15 +1211,20 @@ private:
                    path[i - 1]);
           path[i - 1]->items[pos].comp.child = new_node;
           path[i - 1]->writeUnlock();
-          adjustsuccess++;
-          RT_DEBUG("Adjusted success=%d", adjustsuccess);
+          // adjustsuccess++;
+          // RT_DEBUG("Adjusted success=%d", adjustsuccess);
         } else { // new node is the root, need to update it
           root = new_node;
         }
 
+        rebuilt = true;
         break; // break out for the for loop
       }        // end REBUILD
     }          // end for
+
+    if (!rebuilt) {
+      path[path_size - 1]->writeUnlock();
+    }
 
     // return path[0];
     return true;
