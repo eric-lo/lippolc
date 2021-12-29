@@ -1227,6 +1227,7 @@ private:
                     RT_DEBUG("Final step of adjust, obtain parent %p lock OK,
              now give " "the adjusted tree to parent", path[i - 1]);
                              */
+          int pos = PREDICT_POS(path[i - 1], key);
           path[i - 1]->items[pos].comp.child = new_node;
           path[i - 1]->writeUnlock();
           // adjustsuccess++;
