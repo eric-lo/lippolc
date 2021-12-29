@@ -1035,9 +1035,9 @@ private:
     for (Node *node = root;;) {
       node->writeLockOrRestart(needRestart);
       if (needRestart) {
-        if (restartCount % 1000 == 1)
-          RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d", node,
-                   parent, restartCount);
+        // if (restartCount % 1000 == 1)
+        RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d", node, parent,
+                 restartCount);
         if (parent)
           parent->writeUnlock();
         goto restart;
@@ -1049,12 +1049,12 @@ private:
         goto restart;
       }
 
-      RT_DEBUG("Xlock %p OK", node);
-      RT_ASSERT(parent == node);
+      // RT_DEBUG("Xlock %p OK", node);
+      // RT_ASSERT(parent == node);
       //  if I get the x-lock, shall unlock parent
       if (parent) {
         parent->writeUnlock();
-        RT_DEBUG("Unlock parent %p", parent);
+        // RT_DEBUG("Unlock parent %p", parent);
       }
 
       RT_ASSERT(path_size < MAX_DEPTH);
