@@ -947,9 +947,9 @@ private:
       const int SHOULD_END_POS = begin + node->size;
       RT_DEBUG("ADJUST: collecting keys at %p, SD_END_POS (%d)= begin
                    (% d) +
-                   "
-                   "size (%d)",
-               node, SHOULD_END_POS, begin, node->size.load());
+                   size(% d) ",
+                   node,
+               SHOULD_END_POS, begin, node->size.load());
       s.pop();
 
       int tmpnumkey = 0;
@@ -973,9 +973,9 @@ private:
             RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at
                              child %
                              p >
-                         of "
-                            "size %d to stack",
-                     begin, node->items[i].comp.child,
+                         of size % d to stack ",
+                             begin,
+                     node->items[i].comp.child,
                      node->items[i].comp.child->size.load());
             begin += node->items[i].comp.child->size;
             RT_DEBUG("ADJUST: begin is updated to=%d", begin);
@@ -1079,12 +1079,10 @@ private:
           path[i]->num_insert_to_data += insert_to_data;
           path[i]->num_inserts++;
           path[i]->size++;
-          RT_DEBUG("Post insert(%d): update per node stat: %p size=%d,
-                   num_insert = % d,
-                   num_insert_to_data = % d ", key, path[i],
-                                          path[i]
-                                              ->size.load(),
-                   path[i]->num_inserts, path[i]->num_insert_to_data);
+          RT_DEBUG("Post insert(%d): update per node stat: %p size=%d, "
+                   "num_insert = % d, num_insert_to_data = % d",
+                   key, path[i], path[i]->size.load(), path[i]->num_inserts,
+                   path[i]->num_insert_to_data);
         }
         // node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is
         // locked,
@@ -1106,18 +1104,17 @@ private:
           path[i]->size++;
           RT_DEBUG("Post insert(%d): update per node stat: %p
                    size = % d,
-                   "
-                   "num_insert=%d, num_insert_to_data=%d",
-                   key, path[i], path[i]->size.load(), path[i]->num_inserts,
+                   num_insert = % d,
+                   num_insert_to_data = % d ",
+                                        key,
+                   path[i], path[i]->size.load(), path[i]->num_inserts,
                    path[i]->num_insert_to_data);
         }
 
         // node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is
         // locked, other threads can't carry out adjust
-        RT_DEBUG("New child %p (of size %d) created at %p and
-                 Unlocked ",
-                 node->items[pos]
-                     .comp.child,
+        RT_DEBUG("New child %p (of size %d) created at %p and Unlocked ",
+                 node->items[pos].comp.child,
                  node->items[pos].comp.child->size.load(), node);
         break;
       } else // 1 means has a child, need to go down and see
