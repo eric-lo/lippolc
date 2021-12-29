@@ -50,7 +50,7 @@ typedef uint8_t bitmap_t;
 
 // if debug mode on, set if to true
 #define RT_DEBUG(msg, ...)                                                     \
-  if (false) {                                                                 \
+  if (true) {                                                                  \
     if (omp_get_thread_num() == 0) {                                           \
       printf(GREEN "T%d: " msg RESET "\n", omp_get_thread_num(), __VA_ARGS__); \
     } else if (omp_get_thread_num() == 1) {                                    \
@@ -892,9 +892,9 @@ private:
     std::list<Node *> bfs;
     std::list<Node *> lockedNodes;
 
-    //  RT_DEBUG(
-    //      "ADJUST: PHASE 1: BFS all sub tree locks rooted at %p, with %d
-    //      keys", _subroot, _subroot->size.load());
+     RT_DEBUG(
+         "ADJUST: PHASE 1: BFS all sub tree locks rooted at %p, with %d
+         keys", _subroot, _subroot->size.load());
 
     bfs.push_back(_subroot);
 
@@ -907,7 +907,7 @@ private:
         node->writeLockOrRestart(needRestart);
         if (needRestart) {
           // release locks on all locked ancestors
-          // RT_DEBUG("ADJUST: Xlock %p fail, unlocking all locked", node);
+          RT_DEBUG("ADJUST: Xlock %p fail, unlocking all locked", node);
           for (auto &n : lockedNodes) {
             n->writeUnlock();
           }
@@ -918,7 +918,7 @@ private:
         lockedNodes.push_back(node);
       }
 
-      // RT_DEBUG("ADJUST: Xlock OK on node=%p", node);
+      RT_DEBUG("ADJUST: Xlock OK on node=%p", node);
 
       for (int i = 0; i < node->num_items;
            i++) { // the i-th entry of the node now
@@ -927,15 +927,15 @@ private:
             0) { // it has data/child; not empty entry
           if (BITMAP_GET(node->child_bitmap, i) == 1) { // means it is a child
             bfs.push_back(node->items[i].comp.child);
-            //            RT_DEBUG("ADJUST: BFS pushed to stack %p",
-            //                     node->items[i].comp.child);
+            RT_DEBUG("ADJUST: BFS pushed to stack %p",
+                     node->items[i].comp.child);
           }
         }
       }
     } // end while
 
-    //    RT_DEBUG("ADJUST: BFS locks all granted. **PHASE 2: now",
-    //             0); // as it must contain at least 1 arg after comma
+       RT_DEBUG("ADJUST: BFS locks all granted. **PHASE 2: now",
+                0); // as it must contain at least 1 arg after comma
     typedef std::pair<int, Node *> Segment; // <begin, Node*>
     std::stack<Segment> s;
     s.push(Segment(0, _subroot));
@@ -945,10 +945,11 @@ private:
       Node *node = s.top().second;
 
       const int SHOULD_END_POS = begin + node->size;
-      //      RT_DEBUG("ADJUST: collecting keys at %p, SD_END_POS (%d)= begin
-      //      (%d) + "
-      //               "size (%d)",
-      //               node, SHOULD_END_POS, begin, node->size.load());
+      RT_DEBUG("ADJUST: collecting keys at %p, SD_END_POS (%d)= begin
+                   (% d) +
+                   "
+                   "size (%d)",
+               node, SHOULD_END_POS, begin, node->size.load());
       s.pop();
 
       int tmpnumkey = 0;
@@ -964,19 +965,20 @@ private:
             begin++;
             tmpnumkey++;
           } else {
-            //            RT_DEBUG("ADJUST: so far %d keys collected in this
-            //            node",
-            //                     tmpnumkey);
+            RT_DEBUG("ADJUST: so far %d keys collected in this
+                     node ",
+                     tmpnumkey);
             s.push(Segment(begin,
                            node->items[i].comp.child)); // means it is a child
-            //            RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at
-            //            child %p> of "
-            //                     "size %d to stack",
-            //         begin, node->items[i].comp.child,
-            //         node->items[i].comp.child->size.load());
+            RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at
+                             child %
+                             p >
+                         of "
+                            "size %d to stack",
+                     begin, node->items[i].comp.child,
+                     node->items[i].comp.child->size.load());
             begin += node->items[i].comp.child->size;
-            //            RT_DEBUG("ADJUST: begin is updated to=%d",
-            //            begin);
+            RT_DEBUG("ADJUST: begin is updated to=%d", begin);
           }
         } else { // this i-th entry is empty
         }
@@ -1039,10 +1041,9 @@ private:
     for (Node *node = root;;) {
       node->writeLockOrRestart(needRestart);
       if (needRestart) {
-        // if (restartCount % 1000==1)
-        //        RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d",
-        //        node, parent,
-        //                 restartCount);
+        if (restartCount % 1000 == 1)
+          RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d", node,
+                   parent, restartCount);
         if (parent)
           parent->writeUnlock();
         goto restart;
@@ -1054,12 +1055,12 @@ private:
         goto restart;
       }
 
-      // RT_DEBUG("Xlock %p OK", node);
-      //  RT_ASSERT(parent == node);
+      RT_DEBUG("Xlock %p OK", node);
+      RT_ASSERT(parent == node);
       //  if I get the x-lock, shall unlock parent
       if (parent) {
         parent->writeUnlock();
-        // RT_DEBUG("Unlock parent %p", parent);
+        RT_DEBUG("Unlock parent %p", parent);
       }
 
       RT_ASSERT(path_size < MAX_DEPTH);
@@ -1078,15 +1079,17 @@ private:
           path[i]->num_insert_to_data += insert_to_data;
           path[i]->num_inserts++;
           path[i]->size++;
-          // RT_DEBUG("Post insert(%d): update per node stat: %p size=%d,
-          // num_insert=%d, num_insert_to_data=%d", key, path[i],
-          // path[i]->size.load(), path[i]->num_inserts,
-          // path[i]->num_insert_to_data);
+          RT_DEBUG("Post insert(%d): update per node stat: %p size=%d,
+                   num_insert = % d,
+                   num_insert_to_data = % d ", key, path[i],
+                                          path[i]
+                                              ->size.load(),
+                   path[i]->num_inserts, path[i]->num_insert_to_data);
         }
         // node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is
         // locked,
         //  other threads can't carry out adjust
-        // RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
+        RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
         break;
       } else if (BITMAP_GET(node->child_bitmap, pos) ==
                  0) // 0 means existing entry has data already
@@ -1101,20 +1104,21 @@ private:
           path[i]->num_insert_to_data += insert_to_data;
           path[i]->num_inserts++;
           path[i]->size++;
-          //          RT_DEBUG("Post insert(%d): update per node stat: %p
-          //          size=%d, "
-          //                   "num_insert=%d, num_insert_to_data=%d",
-          //                   key, path[i], path[i]->size.load(),
-          //                   path[i]->num_inserts,
-          //                   path[i]->num_insert_to_data);
+          RT_DEBUG("Post insert(%d): update per node stat: %p
+                   size = % d,
+                   "
+                   "num_insert=%d, num_insert_to_data=%d",
+                   key, path[i], path[i]->size.load(), path[i]->num_inserts,
+                   path[i]->num_insert_to_data);
         }
 
         // node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is
         // locked, other threads can't carry out adjust
-        //        RT_DEBUG("New child %p (of size %d) created at %p and
-        //        Unlocked",
-        //                 node->items[pos].comp.child,
-        //                 node->items[pos].comp.child->size.load(), node);
+        RT_DEBUG("New child %p (of size %d) created at %p and
+                 Unlocked ",
+                 node->items[pos]
+                     .comp.child,
+                 node->items[pos].comp.child->size.load(), node);
         break;
       } else // 1 means has a child, need to go down and see
       {
@@ -1200,9 +1204,9 @@ private:
         delete[] keys;
         delete[] values;
 
-        //        RT_DEBUG(
-        //            "Final step of adjust, try to update parent/root, new node
-        //            is %p", node);
+               RT_DEBUG(
+                   "Final step of adjust, try to update parent/root, new node
+                   is %p", node);
 
         path[i] = new_node;
         if (i > 0) {
@@ -1231,7 +1235,7 @@ private:
           path[i - 1]->items[pos].comp.child = new_node;
           path[i - 1]->writeUnlock();
           // adjustsuccess++;
-          // RT_DEBUG("Adjusted success=%d", adjustsuccess);
+          RT_DEBUG("Adjusted success=%d", adjustsuccess);
         } else { // new node is the root, need to update it
           root = new_node;
           root_mutex.unlock();
