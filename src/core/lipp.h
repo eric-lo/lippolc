@@ -1192,9 +1192,9 @@ private:
         delete[] keys;
         delete[] values;
 
-               RT_DEBUG(
-                   "Final step of adjust, try to update parent/root, new node
-                   is %p", node);
+        RT_DEBUG(
+            "Final step of adjust, try to update parent/root, new node is %p",
+            node);
 
         path[i] = new_node;
         if (i > 0) {
