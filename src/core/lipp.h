@@ -10,6 +10,7 @@
 #include <limits>
 #include <list>
 #include <math.h>
+#include <mutex>
 #include <sstream>
 #include <stack>
 #include <stdint.h>
@@ -434,6 +435,7 @@ private:
   };
 
   Node *root;
+  std::mutex root_mutex;
   int adjustsuccess = 0;
   thread_local inline static std::stack<Node *> pending_two;
 
@@ -1137,6 +1139,17 @@ private:
       // const bool need_rebuild = false; //temporary disable
       bool rebuilt = false;
       if (need_rebuild) {
+        if (i == 0) {
+          if (!root_mutex.try_lock()) {
+            continue;
+          }
+        } else {
+          bool needRetry = false;
+          path[i - 1]->writeLockOrRestart(needRetry);
+          if (needRetry) {
+            continue;
+          }
+        }
 
         const int ESIZE = node->size;
         T *keys = new T[ESIZE];
@@ -1154,6 +1167,11 @@ private:
           RT_DEBUG("collectKey for adjusting node %p -- one Xlock fails; quit "
                    "rebuild",
                    node);
+          if (i == 0) {
+            root_mutex.unlock();
+          } else {
+            path[i - 1]->writeUnlock();
+          }
           break; // give up rebuild on this node (most likely other threads have
                  // done it for you already)
         }
@@ -1188,32 +1206,34 @@ private:
 
         path[i] = new_node;
         if (i > 0) {
+          /*
+                    int retryLockCount = 0;
+                  retryLock:
+                    if (retryLockCount++)
+                      yield(retryLockCount);
 
-          int retryLockCount = 0;
-        retryLock:
-          if (retryLockCount++)
-            yield(retryLockCount);
+                    int pos = PREDICT_POS(path[i - 1], key);
 
-          int pos = PREDICT_POS(path[i - 1], key);
+                    bool needRetry = false;
 
-          bool needRetry = false;
-
-          path[i - 1]->writeLockOrRestart(needRetry);
-          if (needRetry) {
-            // RT_DEBUG("Final step of adjust, obtain parent %p lock FAIL,
-            // retry",
-            //          path[i - 1]);
-            goto retryLock;
-          }
-          RT_DEBUG("Final step of adjust, obtain parent %p lock OK, now give "
-                   "the adjusted tree to parent",
-                   path[i - 1]);
+                    path[i - 1]->writeLockOrRestart(needRetry);
+                    if (needRetry) {
+                      // RT_DEBUG("Final step of adjust, obtain parent %p lock
+             FAIL,
+                      // retry",
+                      //          path[i - 1]);
+                      goto retryLock;
+                    }
+                    RT_DEBUG("Final step of adjust, obtain parent %p lock OK,
+             now give " "the adjusted tree to parent", path[i - 1]);
+                             */
           path[i - 1]->items[pos].comp.child = new_node;
           path[i - 1]->writeUnlock();
           // adjustsuccess++;
           // RT_DEBUG("Adjusted success=%d", adjustsuccess);
         } else { // new node is the root, need to update it
           root = new_node;
+          root_mutex.unlock();
         }
 
         rebuilt = true;
