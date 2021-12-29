@@ -892,9 +892,9 @@ private:
     std::list<Node *> bfs;
     std::list<Node *> lockedNodes;
 
-     RT_DEBUG(
-         "ADJUST: PHASE 1: BFS all sub tree locks rooted at %p, with %d
-         keys", _subroot, _subroot->size.load());
+    RT_DEBUG(
+        "ADJUST: PHASE 1: BFS all sub tree locks rooted at %p, with %d keys",
+        _subroot, _subroot->size.load());
 
     bfs.push_back(_subroot);
 
@@ -934,8 +934,8 @@ private:
       }
     } // end while
 
-       RT_DEBUG("ADJUST: BFS locks all granted. **PHASE 2: now",
-                0); // as it must contain at least 1 arg after comma
+    RT_DEBUG("ADJUST: BFS locks all granted. **PHASE 2: now",
+             0); // as it must contain at least 1 arg after comma
     typedef std::pair<int, Node *> Segment; // <begin, Node*>
     std::stack<Segment> s;
     s.push(Segment(0, _subroot));
