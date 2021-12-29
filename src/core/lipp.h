@@ -945,11 +945,9 @@ private:
       Node *node = s.top().second;
 
       const int SHOULD_END_POS = begin + node->size;
-      RT_DEBUG("ADJUST: collecting keys at %p, SD_END_POS (%d)= begin
-                   (% d) +
-                   size(% d) ",
-                   node,
-               SHOULD_END_POS, begin, node->size.load());
+      RT_DEBUG("ADJUST: collecting keys at %p, SD_END_POS (%d)= begin(% d) + "
+               "size(% d) ",
+               node, SHOULD_END_POS, begin, node->size.load());
       s.pop();
 
       int tmpnumkey = 0;
@@ -965,17 +963,13 @@ private:
             begin++;
             tmpnumkey++;
           } else {
-            RT_DEBUG("ADJUST: so far %d keys collected in this
-                     node ",
+            RT_DEBUG("ADJUST: so far %d keys collected in this node ",
                      tmpnumkey);
             s.push(Segment(begin,
                            node->items[i].comp.child)); // means it is a child
-            RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at
-                             child %
-                             p >
-                         of size % d to stack ",
-                             begin,
-                     node->items[i].comp.child,
+            RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at child %p > "
+                     "of size %d to stack ",
+                     begin, node->items[i].comp.child,
                      node->items[i].comp.child->size.load());
             begin += node->items[i].comp.child->size;
             RT_DEBUG("ADJUST: begin is updated to=%d", begin);
@@ -1102,12 +1096,9 @@ private:
           path[i]->num_insert_to_data += insert_to_data;
           path[i]->num_inserts++;
           path[i]->size++;
-          RT_DEBUG("Post insert(%d): update per node stat: %p
-                   size = % d,
-                   num_insert = % d,
-                   num_insert_to_data = % d ",
-                                        key,
-                   path[i], path[i]->size.load(), path[i]->num_inserts,
+          RT_DEBUG("Post insert(%d): update per node stat: %p size = % d, "
+                   "num_insert = % d, num_insert_to_data = % d ",
+                   key, path[i], path[i]->size.load(), path[i]->num_inserts,
                    path[i]->num_insert_to_data);
         }
 
@@ -1231,7 +1222,7 @@ private:
           int pos = PREDICT_POS(path[i - 1], key);
           path[i - 1]->items[pos].comp.child = new_node;
           path[i - 1]->writeUnlock();
-          // adjustsuccess++;
+          adjustsuccess++;
           RT_DEBUG("Adjusted success=%d", adjustsuccess);
         } else { // new node is the root, need to update it
           root = new_node;
