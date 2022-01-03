@@ -49,7 +49,7 @@ typedef uint8_t bitmap_t;
 
 //if debug mode on, set if to true
 #define RT_DEBUG(msg, ...) \
-  if (true) { \
+  if (false) { \
     if (omp_get_thread_num()==0) {  \
       printf(GREEN "T%d: " msg RESET"\n", omp_get_thread_num(), __VA_ARGS__); \
     } else if (omp_get_thread_num()==1) {  \
@@ -882,7 +882,7 @@ private:
     }
   }
 
-  bool scan_and_destory_tree(Node *_subroot, T *keys, P *values,
+  int scan_and_destory_tree(Node *_subroot, T **keys, P **values, //keys here is ptr to ptr
                              bool destory = false) { //turn to false and shall pass to epoch reclaim later because of multi-threading
           
     
@@ -906,7 +906,7 @@ private:
           n->writeUnlock();
         }
         
-        return false;
+        return -1;
       }
       //x-lock this node SUCCESS
       lockedNodes.push_back(node);
@@ -930,6 +930,10 @@ private:
     std::stack<Segment> s;
     s.push(Segment(0, _subroot));
 
+    const int ESIZE= _subroot->size;
+    *keys = new T[ESIZE]; 
+    *values = new P[ESIZE]; 
+
     while (!s.empty()) {
       int begin = s.top().first;
       Node *node = s.top().second;
@@ -944,8 +948,8 @@ private:
 
         if (BITMAP_GET(node->none_bitmap, i) == 0) { //it has data/child; not empty entry
           if (BITMAP_GET(node->child_bitmap, i) == 0) { //means it is a data
-            keys[begin] = node->items[i].comp.data.key;
-            values[begin] = node->items[i].comp.data.value;            
+            (*keys)[begin] = node->items[i].comp.data.key;
+            (*values)[begin] = node->items[i].comp.data.value;            
             begin++;            
             tmpnumkey++;
           } else {
@@ -989,7 +993,7 @@ private:
         }
       }
     } //end while
-    return true;
+    return ESIZE;
   }//end scan_and_destory
 
   //Node* insert_tree(Node *_node, const T &key, const P &value) {
@@ -1116,17 +1120,21 @@ private:
 
       if (need_rebuild) {        
 
-        const int ESIZE = node->size;
-        T *keys = new T[ESIZE];
-        P *values = new P[ESIZE];
+        //const int ESIZE = node->size; //race here
+        //T *keys = new T[ESIZE];
+        //P *values = new P[ESIZE];
+        T* keys;  //make it be a ptr here because we will let scan_and_destroy to decide the size after getting the locks
+        P* values; //scan_and_destroy will fill up the keys/values
 
 #if COLLECT_TIME
         auto start_time_scan = std::chrono::high_resolution_clock::now();
 #endif
-        bool collectKey_success = scan_and_destory_tree(node, keys, values);
-        if (!collectKey_success) {//this thread failed scan_and_destory because of race
-          delete[] keys;
-          delete[] values;
+        int numKeysCollected = scan_and_destory_tree(node, &keys, &values); //pass the (address) of the ptr
+        if (numKeysCollected < 0) {          
+          for(int x=0; x< numKeysCollected; x++){
+            delete &keys[x]; //keys[x] stores keys
+            delete &values[x];
+          }
           RT_DEBUG("collectKey for adjusting node %p -- one Xlock fails; quit rebuild", node);
           break; //give up rebuild on this node (most likely other threads have done it for you already)
         }
@@ -1142,7 +1150,7 @@ private:
 #if COLLECT_TIME
         auto start_time_build = std::chrono::high_resolution_clock::now();
 #endif
-        Node *new_node = build_tree_bulk(keys, values, ESIZE);
+        Node *new_node = build_tree_bulk(keys, values, numKeysCollected);
 #if COLLECT_TIME
         auto end_time_build = std::chrono::high_resolution_clock::now();
         auto duration_build = end_time_build - start_time_build;
