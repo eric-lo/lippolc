@@ -9,8 +9,8 @@ int main()
 {
     LIPP<int, int> lipp;
 
-    int key_num = 10000;
-    omp_set_num_threads(5);
+    int key_num = 100;
+    omp_set_num_threads(2);
 
     #pragma omp parallel for schedule(static, 1)
     for(int i = 0; i < key_num; i++) {        

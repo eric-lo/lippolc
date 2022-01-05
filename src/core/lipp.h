@@ -38,26 +38,29 @@ typedef uint8_t bitmap_t;
   }
 
 // runtime debug
-#define RESET   "\033[0m"
-#define RED     "\033[31m"      /* Red */
-#define GREEN   "\033[32m"      /* Green */
-#define YELLOW  "\033[33m"      /* Yellow */
-#define BLUE    "\033[34m"      /* Blue */
-#define MAGENTA "\033[35m"      /* Magenta */
-#define CYAN    "\033[36m"      /* Cyan */
-#define WHITE   "\033[37m"      /* White */
+#define DEBUG 1
 
-//if debug mode on, set if to true
-#define RT_DEBUG(msg, ...) \
-  if (false) { \
+#if DEBUG
+  #define RESET   "\033[0m"
+  #define RED     "\033[31m"      /* Red */
+  #define GREEN   "\033[32m"      /* Green */
+  #define YELLOW  "\033[33m"      /* Yellow */
+  #define BLUE    "\033[34m"      /* Blue */
+  #define MAGENTA "\033[35m"      /* Magenta */
+  #define CYAN    "\033[36m"      /* Cyan */
+  #define WHITE   "\033[37m"      /* White */
+
+  #define RT_DEBUG(msg, ...) \
     if (omp_get_thread_num()==0) {  \
       printf(GREEN "T%d: " msg RESET"\n", omp_get_thread_num(), __VA_ARGS__); \
     } else if (omp_get_thread_num()==1) {  \
       printf(YELLOW "\t\t\tT%d: " msg RESET"\n", omp_get_thread_num(), __VA_ARGS__); \
     } else { \
       printf(BLUE "\t\t\t\t\t\tT%d: " msg RESET"\n", omp_get_thread_num(), __VA_ARGS__); \
-    } \
-  }
+    } 
+#else 
+  #define RT_DEBUG(msg, ...) 
+#endif
 
 #define COLLECT_TIME 0
 
