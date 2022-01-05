@@ -5,6 +5,7 @@
 #include "lipp_base.h"
 #include "omp.h"
 #include <atomic>
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -161,20 +162,8 @@ public:
     bool doesThreadWantToAdvanceEpoch() { return (mThreadWantsToAdvance); }
 
   private:
-    Alloc allocator_ = Alloc();
-    typename model_node_type::alloc_type model_node_allocator() {
-      return typename model_node_type::alloc_type(allocator_);
-    }
-
-    typename data_node_type::alloc_type data_node_allocator() {
-      return typename data_node_type::alloc_type(allocator_);
-    }
-
-    typename model_node_type::pointer_alloc_type pointer_allocator() {
-      return typename model_node_type::pointer_alloc_type(allocator_);
-    }
-
     void freeForEpoch(uint32_t epoch) {
+      /*
       std::vector<void *> &previousFreeList = mFreeLists[epoch];
       for (void *pointer : previousFreeList) {
         auto node = reinterpret_cast<AlexNode<T, P> *>(pointer);
@@ -191,6 +180,7 @@ public:
         }
       }
       previousFreeList.resize(0u);
+      */
     }
   };
 
