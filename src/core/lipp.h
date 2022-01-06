@@ -169,8 +169,8 @@ public:
 
   private:
     void freeForEpoch(uint32_t epoch) {
-      std::vector<std::pair<void *, void (*dealloc_func)(void *ptr)>>
-          &previousFreeList = mFreeLists[epoch];
+      std::vector<std::pair<void *, dealloc_func>> &previousFreeList =
+          mFreeLists[epoch];
       // for (void *pointer : previousFreeList) {
       for (std::pair<void *, dealloc_func> func_pair : previousFreeList) {
         func_pair.second(func_pair.first);
