@@ -165,10 +165,15 @@ public:
 
   private:
     void freeForEpoch(uint32_t epoch) {
-      /*
       std::vector<void *> &previousFreeList = mFreeLists[epoch];
       for (void *pointer : previousFreeList) {
-        auto node = reinterpret_cast<AlexNode<T, P> *>(pointer);
+        auto node = reinterpret_cast<Node *>(pointer);
+        delete_items(node->items, node->num_items);
+        const int bitmap_size = BITMAP_SIZE(node->num_items);
+        delete_bitmap(node->none_bitmap, bitmap_size);
+        delete_bitmap(node->child_bitmap, bitmap_size);
+        delete_nodes(node, 1);
+        /*
         if (node == nullptr) {
           return;
         } else if (node->is_leaf_) {
@@ -180,9 +185,9 @@ public:
           model_node_allocator().deallocate(
               static_cast<model_node_type *>(node), 1);
         }
+        */
       }
       previousFreeList.resize(0u);
-      */
     }
   };
 
@@ -398,6 +403,7 @@ public:
   }
 
   bool exists(const T &key) const {
+    EpochGuard guard;
     Node *node = root;
     while (true) {
       int pos = PREDICT_POS(node, key);
@@ -602,6 +608,14 @@ private:
     return p;
   }
   void delete_nodes(Node *p, int n) { node_allocator.deallocate(p, n); }
+
+  void safe_delete_nodes(Node *p, int n) {
+    for (int i = 0; i < n; ++i) {
+      ebr->scheduleForDeletion(reinterpret_cast<void *>(p));
+      p = p + 1;
+    }
+    // node_allocator.deallocate(p, n);
+  }
 
   std::allocator<Item> item_allocator;
   Item *new_items(int n) {
@@ -1151,11 +1165,14 @@ private:
           node->child_bitmap[0] = 0;
           pending_two.push(node);
         } else {
+          /*
           delete_items(node->items, node->num_items);
           const int bitmap_size = BITMAP_SIZE(node->num_items);
           delete_bitmap(node->none_bitmap, bitmap_size);
           delete_bitmap(node->child_bitmap, bitmap_size);
           delete_nodes(node, 1);
+          */
+          safe_delete_nodes(node, 1);
         }
       }
     } // end while
