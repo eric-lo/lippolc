@@ -116,7 +116,10 @@ public:
   // Epoch based Memory Reclaim
   class ThreadSpecificEpochBasedReclamationInformation {
 
-    std::array<std::vector<void *>, 3> mFreeLists;
+    // std::array<std::vector<void *>, 3> mFreeLists;
+    std::array<std::vector<std::pair<void *, void (*dealloc_func)(void *ptr)>>,
+               3>
+        mFreeLists;
     std::atomic<uint32_t> mLocalEpoch;
     uint32_t mPreviouslyAccessedEpoch;
     bool mThreadWantsToAdvance;
@@ -138,10 +141,12 @@ public:
       }
     }
 
-    void scheduleForDeletion(void *childPointer) {
+    void scheduleForDeletion(
+        std::pair<void *, void (*dealloc_func)(void *ptr)> func_pair) {
       assert(mLocalEpoch != 3);
-      std::vector<void *> &currentFreeList = mFreeLists[mLocalEpoch];
-      currentFreeList.emplace_back(childPointer);
+      std::vector<std::pair<void *, void (*dealloc_func)(void *ptr)>>
+          &currentFreeList = mFreeLists[mLocalEpoch];
+      currentFreeList.emplace_back(func_pair);
       mThreadWantsToAdvance = (currentFreeList.size() % 64u) == 0;
     }
 
@@ -165,26 +170,19 @@ public:
 
   private:
     void freeForEpoch(uint32_t epoch) {
-      std::vector<void *> &previousFreeList = mFreeLists[epoch];
-      for (void *pointer : previousFreeList) {
-        auto node = reinterpret_cast<Node *>(pointer);
-        delete_items(node->items, node->num_items);
-        const int bitmap_size = BITMAP_SIZE(node->num_items);
-        delete_bitmap(node->none_bitmap, bitmap_size);
-        delete_bitmap(node->child_bitmap, bitmap_size);
-        delete_nodes(node, 1);
+      std::vector<std::pair<void *, void (*dealloc_func)(void *ptr)>>
+          &previousFreeList = mFreeLists[epoch];
+      // for (void *pointer : previousFreeList) {
+      for (std::pair < void *,
+           void (*dealloc_func)(void *ptr) >> func_pair : previousFreeList) {
+        func_pair->second(func_pair->first);
         /*
-        if (node == nullptr) {
-          return;
-        } else if (node->is_leaf_) {
-          data_node_allocator().destroy(static_cast<data_node_type *>(node));
-          data_node_allocator().deallocate(static_cast<data_node_type *>(node),
-                                           1);
-        } else {
-          model_node_allocator().destroy(static_cast<model_node_type *>(node));
-          model_node_allocator().deallocate(
-              static_cast<model_node_type *>(node), 1);
-        }
+        auto node = reinterpret_cast<Node *>(pointer);
+        my_tree->delete_items(node->items, node->num_items);
+        const int bitmap_size = BITMAP_SIZE(node->num_items);
+        my_tree->delete_bitmap(node->none_bitmap, bitmap_size);
+        my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
+        my_tree->delete_nodes(node, 1);
         */
       }
       previousFreeList.resize(0u);
@@ -243,8 +241,9 @@ public:
       currentMemoryInformation.leave();
     }
 
-    void scheduleForDeletion(void *childPointer) {
-      mThreadSpecificInformations.local().scheduleForDeletion(childPointer);
+    void scheduleForDeletion(
+        std::pair<void *, void (*dealloc_func)(void *ptr)> func_pair) {
+      mThreadSpecificInformations.local().scheduleForDeletion(func_pair);
     }
   };
 
@@ -607,11 +606,27 @@ private:
     RT_ASSERT(p != NULL && p != (Node *)(-1));
     return p;
   }
+
+  auto callback = [](void *pointer) {
+    std::pair<LIPP *, Node *> *ptr =
+        reinterpret_cast<std::pair<LIPP *, Node *> *>(pointer);
+    auto my_tree = ptr->first;
+    auto node = ptr->second;
+    my_tree->delete_items(node->items, node->num_items);
+    const int bitmap_size = BITMAP_SIZE(node->num_items);
+    my_tree->delete_bitmap(node->none_bitmap, bitmap_size);
+    my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
+    my_tree->delete_nodes(node, 1);
+    delete ptr;
+  };
+
   void delete_nodes(Node *p, int n) { node_allocator.deallocate(p, n); }
 
   void safe_delete_nodes(Node *p, int n) {
     for (int i = 0; i < n; ++i) {
-      ebr->scheduleForDeletion(reinterpret_cast<void *>(p));
+      auto ptr = new std::pair<LIPP *, Node *>(this, p);
+      ebr->scheduleForDeletion(
+          std::make_pair(reinterpret_cast<void *>(ptr), callback));
       p = p + 1;
     }
     // node_allocator.deallocate(p, n);
