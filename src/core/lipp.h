@@ -4,6 +4,8 @@
 #include "concurrency.h"
 #include "lipp_base.h"
 #include "omp.h"
+#include "tbb/combinable.h"
+#include "tbb/enumerable_thread_specific.h"
 #include <atomic>
 #include <cassert>
 #include <cstdio>

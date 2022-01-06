@@ -14,7 +14,7 @@ include_directories(src/core)
 # add_executable(example_bulk_load src/examples/example_bulk_load.cpp)
 add_executable(example_mt src/examples/example_mt.cpp)
 
-target_link_libraries(example_mt PUBLIC OpenMP::OpenMP_CXX)
+target_link_libraries(example_mt PUBLIC OpenMP::OpenMP_CXX tbb)
 
 ################################
 ######## For benchmark ######### (not used yet)
