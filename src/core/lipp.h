@@ -618,6 +618,7 @@ private:
     my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
     my_tree->delete_nodes(node, 1);
     delete ptr;
+    return;
   };
 
   void delete_nodes(Node *p, int n) { node_allocator.deallocate(p, n); }
