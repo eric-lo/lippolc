@@ -53,6 +53,8 @@ typedef uint8_t bitmap_t;
 #define CYAN "\033[36m"    /* Cyan */
 #define WHITE "\033[37m"   /* White */
 
+typedef void (*dealloc_func)(void *ptr);
+
 #define RT_DEBUG(msg, ...)                                                     \
   if (omp_get_thread_num() == 0) {                                             \
     printf(GREEN "T%d: " msg RESET "\n", omp_get_thread_num(), __VA_ARGS__);   \
@@ -117,9 +119,7 @@ public:
   class ThreadSpecificEpochBasedReclamationInformation {
 
     // std::array<std::vector<void *>, 3> mFreeLists;
-    std::array<std::vector<std::pair<void *, void (*dealloc_func)(void *ptr)>>,
-               3>
-        mFreeLists;
+    std::array<std::vector<std::pair<void *, dealloc_func>>, 3> mFreeLists;
     std::atomic<uint32_t> mLocalEpoch;
     uint32_t mPreviouslyAccessedEpoch;
     bool mThreadWantsToAdvance;
@@ -141,11 +141,10 @@ public:
       }
     }
 
-    void scheduleForDeletion(
-        std::pair<void *, void (*dealloc_func)(void *ptr)> func_pair) {
+    void scheduleForDeletion(std::pair<void *, dealloc_func> func_pair) {
       assert(mLocalEpoch != 3);
-      std::vector<std::pair<void *, void (*dealloc_func)(void *ptr)>>
-          &currentFreeList = mFreeLists[mLocalEpoch];
+      std::vector<std::pair<void *, dealloc_func>> &currentFreeList =
+          mFreeLists[mLocalEpoch];
       currentFreeList.emplace_back(func_pair);
       mThreadWantsToAdvance = (currentFreeList.size() % 64u) == 0;
     }
@@ -173,9 +172,8 @@ public:
       std::vector<std::pair<void *, void (*dealloc_func)(void *ptr)>>
           &previousFreeList = mFreeLists[epoch];
       // for (void *pointer : previousFreeList) {
-      for (std::pair < void *,
-           void (*dealloc_func)(void *ptr) >> func_pair : previousFreeList) {
-        func_pair->second(func_pair->first);
+      for (std::pair<void *, dealloc_func> func_pair : previousFreeList) {
+        func_pair.second(func_pair.first);
         /*
         auto node = reinterpret_cast<Node *>(pointer);
         my_tree->delete_items(node->items, node->num_items);
@@ -241,8 +239,7 @@ public:
       currentMemoryInformation.leave();
     }
 
-    void scheduleForDeletion(
-        std::pair<void *, void (*dealloc_func)(void *ptr)> func_pair) {
+    void scheduleForDeletion(std::pair<void *, dealloc_func> func_pair) {
       mThreadSpecificInformations.local().scheduleForDeletion(func_pair);
     }
   };
