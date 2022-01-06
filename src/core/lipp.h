@@ -604,23 +604,23 @@ private:
     return p;
   }
 
-  auto callback = [](void *pointer) {
-    std::pair<LIPP *, Node *> *ptr =
-        reinterpret_cast<std::pair<LIPP *, Node *> *>(pointer);
-    auto my_tree = ptr->first;
-    auto node = ptr->second;
-    my_tree->delete_items(node->items, node->num_items);
-    const int bitmap_size = BITMAP_SIZE(node->num_items);
-    my_tree->delete_bitmap(node->none_bitmap, bitmap_size);
-    my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
-    my_tree->delete_nodes(node, 1);
-    delete ptr;
-    return;
-  };
-
   void delete_nodes(Node *p, int n) { node_allocator.deallocate(p, n); }
 
   void safe_delete_nodes(Node *p, int n) {
+    auto callback = [](void *pointer) {
+      std::pair<LIPP *, Node *> *ptr =
+          reinterpret_cast<std::pair<LIPP *, Node *> *>(pointer);
+      auto my_tree = ptr->first;
+      auto node = ptr->second;
+      my_tree->delete_items(node->items, node->num_items);
+      const int bitmap_size = BITMAP_SIZE(node->num_items);
+      my_tree->delete_bitmap(node->none_bitmap, bitmap_size);
+      my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
+      my_tree->delete_nodes(node, 1);
+      delete ptr;
+      return;
+    };
+
     for (int i = 0; i < n; ++i) {
       auto ptr = new std::pair<LIPP *, Node *>(this, p);
       ebr->scheduleForDeletion(
