@@ -618,7 +618,7 @@ private:
       my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
       my_tree->delete_nodes(node, 1);
       delete ptr;
-      std::cout << "delete one node" << std::endl;
+      printf("The node has been deleted\n");
       return;
     };
 
