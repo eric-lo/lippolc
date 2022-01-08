@@ -41,7 +41,7 @@ typedef uint8_t bitmap_t;
   }
 
 // runtime debug
-#define DEBUG 1
+// #define DEBUG 1
 
 #if DEBUG
 #define RESET "\033[0m"
@@ -1065,8 +1065,8 @@ private:
 
   int scan_and_destory_tree(
       Node *_subroot, T **keys, P **values, // keys here is ptr to ptr
-      bool destory = false) { // turn to false and shall pass to epoch reclaim
-                              // later because of multi-threading
+      bool destory = true) { // turn to false and shall pass to epoch reclaim
+                             // later because of multi-threading
 
     std::list<Node *> bfs;
     std::list<Node *> lockedNodes;
