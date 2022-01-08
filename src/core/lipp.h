@@ -40,6 +40,8 @@ typedef uint8_t bitmap_t;
     }                                                                          \
   }
 
+typedef void (*dealloc_func)(void *ptr);
+
 // runtime debug
 // #define DEBUG 1
 
@@ -52,8 +54,6 @@ typedef uint8_t bitmap_t;
 #define MAGENTA "\033[35m" /* Magenta */
 #define CYAN "\033[36m"    /* Cyan */
 #define WHITE "\033[37m"   /* White */
-
-typedef void (*dealloc_func)(void *ptr);
 
 #define RT_DEBUG(msg, ...)                                                     \
   if (omp_get_thread_num() == 0) {                                             \
