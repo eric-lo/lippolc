@@ -290,6 +290,7 @@ public:
 
   void insert(const V &v) { insert(v.first, v.second); }
   void insert(const T &key, const P &value) {
+    std::cout << "Inserting key " << key << std::endl;
     EpochGuard guard;
     // root = insert_tree(root, key, value);
     bool state = insert_tree(key, value);
