@@ -1252,7 +1252,7 @@ private:
       path[path_size++] = node;
 
       int pos = PREDICT_POS(node, key);
-      if (key == 65) {
+      if (key >= 64) {
         std::cout << "The pos from parent node = " << pos << std::endl;
       }
 
@@ -1308,7 +1308,7 @@ private:
         parent = node;
         node = node->items[pos].comp.child;
 
-        if (key == 65) {
+        if (key >= 64) {
           std::cout << "I enter into this branch: " << std::endl;
           printf("The parent node is %p and the child is %p\n", parent, node);
         }
