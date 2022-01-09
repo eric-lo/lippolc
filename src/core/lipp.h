@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <list>
 #include <math.h>
@@ -40,6 +41,8 @@ typedef uint8_t bitmap_t;
     }                                                                          \
   }
 
+typedef void (*dealloc_func)(void *ptr);
+
 // runtime debug
 #define DEBUG 1
 
@@ -52,8 +55,6 @@ typedef uint8_t bitmap_t;
 #define MAGENTA "\033[35m" /* Magenta */
 #define CYAN "\033[36m"    /* Cyan */
 #define WHITE "\033[37m"   /* White */
-
-typedef void (*dealloc_func)(void *ptr);
 
 #define RT_DEBUG(msg, ...)                                                     \
   if (omp_get_thread_num() == 0) {                                             \
@@ -1064,8 +1065,8 @@ private:
 
   int scan_and_destory_tree(
       Node *_subroot, T **keys, P **values, // keys here is ptr to ptr
-      bool destory = false) { // turn to false and shall pass to epoch reclaim
-                              // later because of multi-threading
+      bool destory = true) { // turn to false and shall pass to epoch reclaim
+                             // later because of multi-threading
 
     std::list<Node *> bfs;
     std::list<Node *> lockedNodes;
@@ -1176,6 +1177,7 @@ private:
           node->num_inserts = node->num_insert_to_data = 0;
           node->none_bitmap[0] = 0xff;
           node->child_bitmap[0] = 0;
+          node->writeUnlock();
           pending_two.push(node);
         } else {
           /*
@@ -1315,7 +1317,6 @@ private:
       // const bool need_rebuild = false; //temporary disable
 
       if (need_rebuild) {
-
         // const int ESIZE = node->size; //race here
         // T *keys = new T[ESIZE];
         // P *values = new P[ESIZE];
@@ -1326,6 +1327,7 @@ private:
 #if COLLECT_TIME
         auto start_time_scan = std::chrono::high_resolution_clock::now();
 #endif
+
         int numKeysCollected = scan_and_destory_tree(
             node, &keys, &values); // pass the (address) of the ptr
         if (numKeysCollected < 0) {
