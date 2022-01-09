@@ -1252,6 +1252,9 @@ private:
       path[path_size++] = node;
 
       int pos = PREDICT_POS(node, key);
+      if (key == 65) {
+        std::cout << "The pos from parent node = " << pos << std::endl;
+      }
 
       if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
       {
@@ -1304,6 +1307,12 @@ private:
         // set parent=<current inner node>, and set node=<child-node>
         parent = node;
         node = node->items[pos].comp.child;
+
+        if (key == 65) {
+          std::cout << "I enter into this branch: " << std::endl;
+          printf("The parent node is %p and the child is %p\n", parent, node);
+        }
+
         //***** this case, never exit the for loop here, so no need to
         // unlock****//
       }
@@ -1334,7 +1343,7 @@ private:
         auto start_time_scan = std::chrono::high_resolution_clock::now();
 #endif
 
-        std::cout << "Start scanning and destory tree at path " << path_size
+        std::cout << "Start scanning and destory tree at path " << i
                   << std::endl;
         int numKeysCollected = scan_and_destory_tree(
             node, &keys, &values); // pass the (address) of the ptr
@@ -1406,6 +1415,7 @@ private:
           adjustsuccess++;
           RT_DEBUG("Adjusted success=%d", adjustsuccess);
         } else { // new node is the root, need to update it
+          printf("Now the root is the new node at %p\n", new_node);
           root = new_node;
         }
 
