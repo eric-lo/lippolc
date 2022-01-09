@@ -1179,7 +1179,8 @@ private:
           node->num_inserts = node->num_insert_to_data = 0;
           node->none_bitmap[0] = 0xff;
           node->child_bitmap[0] = 0;
-          pending_two.push(node);
+          node->writeUnlock();
+          node->pending_two.push(node);
         } else {
           /*
           delete_items(node->items, node->num_items);
