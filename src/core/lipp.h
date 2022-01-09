@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <list>
 #include <math.h>
@@ -43,7 +44,7 @@ typedef uint8_t bitmap_t;
 typedef void (*dealloc_func)(void *ptr);
 
 // runtime debug
-#define DEBUG 1
+//#define DEBUG 1
 
 #if DEBUG
 #define RESET "\033[0m"
@@ -1225,6 +1226,9 @@ private:
         RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d", node, parent,
                  restartCount);
         printf("Path size = %d\n", path_size);
+        printf("Xlock %p FAIL, unlock par %p, restartCount=%d\n", node, parent,
+               restartCount);
+        exit(1);
         if (parent)
           parent->writeUnlock();
         goto restart;
@@ -1329,6 +1333,9 @@ private:
 #if COLLECT_TIME
         auto start_time_scan = std::chrono::high_resolution_clock::now();
 #endif
+
+        std::cout << "Start scanning and destory tree at path " << path_size
+                  << std::endl;
         int numKeysCollected = scan_and_destory_tree(
             node, &keys, &values); // pass the (address) of the ptr
         if (numKeysCollected < 0) {
@@ -1355,6 +1362,7 @@ private:
         auto start_time_build = std::chrono::high_resolution_clock::now();
 #endif
         Node *new_node = build_tree_bulk(keys, values, numKeysCollected);
+        printf("The addr of new node is %p\n", new_node);
 #if COLLECT_TIME
         auto end_time_build = std::chrono::high_resolution_clock::now();
         auto duration_build = end_time_build - start_time_build;
@@ -1393,6 +1401,7 @@ private:
                    "the adjusted tree to parent",
                    path[i - 1]);
           path[i - 1]->items[pos].comp.child = new_node;
+          printf("The parent addr is %p\n", path[i - 1]);
           path[i - 1]->writeUnlock();
           adjustsuccess++;
           RT_DEBUG("Adjusted success=%d", adjustsuccess);
