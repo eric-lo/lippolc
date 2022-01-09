@@ -43,7 +43,7 @@ typedef uint8_t bitmap_t;
 typedef void (*dealloc_func)(void *ptr);
 
 // runtime debug
-// #define DEBUG 1
+#define DEBUG 1
 
 #if DEBUG
 #define RESET "\033[0m"
@@ -1224,6 +1224,7 @@ private:
         // if (restartCount % 1000==1)
         RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d", node, parent,
                  restartCount);
+        printf("Path size = %d\n", path_size);
         if (parent)
           parent->writeUnlock();
         goto restart;
