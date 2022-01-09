@@ -44,7 +44,7 @@ typedef uint8_t bitmap_t;
 typedef void (*dealloc_func)(void *ptr);
 
 // runtime debug
-//#define DEBUG 1
+#define DEBUG 1
 
 #if DEBUG
 #define RESET "\033[0m"
@@ -619,7 +619,6 @@ private:
       my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
       my_tree->delete_nodes(node, 1);
       delete ptr;
-      printf("The node has been deleted\n");
       return;
     };
 
