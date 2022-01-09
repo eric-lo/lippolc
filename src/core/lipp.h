@@ -1180,7 +1180,7 @@ private:
           node->none_bitmap[0] = 0xff;
           node->child_bitmap[0] = 0;
           node->writeUnlock();
-          node->pending_two.push(node);
+          pending_two.push(node);
         } else {
           /*
           delete_items(node->items, node->num_items);
