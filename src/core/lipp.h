@@ -291,7 +291,6 @@ public:
 
   void insert(const V &v) { insert(v.first, v.second); }
   void insert(const T &key, const P &value) {
-    std::cout << "Inserting key " << key << std::endl;
     EpochGuard guard;
     // root = insert_tree(root, key, value);
     bool state = insert_tree(key, value);
@@ -1226,10 +1225,6 @@ private:
         // if (restartCount % 1000==1)
         RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d", node, parent,
                  restartCount);
-        printf("Path size = %d\n", path_size);
-        printf("Xlock %p FAIL, unlock par %p, restartCount=%d\n", node, parent,
-               restartCount);
-        exit(1);
         if (parent)
           parent->writeUnlock();
         goto restart;
@@ -1253,9 +1248,6 @@ private:
       path[path_size++] = node;
 
       int pos = PREDICT_POS(node, key);
-      if (key >= 64) {
-        std::cout << "The pos from parent node = " << pos << std::endl;
-      }
 
       if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
       {
@@ -1308,12 +1300,6 @@ private:
         // set parent=<current inner node>, and set node=<child-node>
         parent = node;
         node = node->items[pos].comp.child;
-
-        if (key >= 64) {
-          std::cout << "I enter into this branch: " << std::endl;
-          printf("The parent node is %p and the child is %p\n", parent, node);
-        }
-
         //***** this case, never exit the for loop here, so no need to
         // unlock****//
       }
@@ -1332,7 +1318,6 @@ private:
       // const bool need_rebuild = false; //temporary disable
 
       if (need_rebuild) {
-
         // const int ESIZE = node->size; //race here
         // T *keys = new T[ESIZE];
         // P *values = new P[ESIZE];
@@ -1344,8 +1329,6 @@ private:
         auto start_time_scan = std::chrono::high_resolution_clock::now();
 #endif
 
-        std::cout << "Start scanning and destory tree at path " << i
-                  << std::endl;
         int numKeysCollected = scan_and_destory_tree(
             node, &keys, &values); // pass the (address) of the ptr
         if (numKeysCollected < 0) {
@@ -1372,7 +1355,6 @@ private:
         auto start_time_build = std::chrono::high_resolution_clock::now();
 #endif
         Node *new_node = build_tree_bulk(keys, values, numKeysCollected);
-        printf("The addr of new node is %p\n", new_node);
 #if COLLECT_TIME
         auto end_time_build = std::chrono::high_resolution_clock::now();
         auto duration_build = end_time_build - start_time_build;
@@ -1411,12 +1393,10 @@ private:
                    "the adjusted tree to parent",
                    path[i - 1]);
           path[i - 1]->items[pos].comp.child = new_node;
-          printf("The parent addr is %p\n", path[i - 1]);
           path[i - 1]->writeUnlock();
           adjustsuccess++;
           RT_DEBUG("Adjusted success=%d", adjustsuccess);
         } else { // new node is the root, need to update it
-          printf("Now the root is the new node at %p\n", new_node);
           root = new_node;
         }
 
