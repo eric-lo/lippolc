@@ -614,11 +614,16 @@ private:
           reinterpret_cast<std::pair<LIPP *, Node *> *>(pointer);
       auto my_tree = ptr->first;
       auto node = ptr->second;
-      my_tree->delete_items(node->items, node->num_items);
-      const int bitmap_size = BITMAP_SIZE(node->num_items);
-      my_tree->delete_bitmap(node->none_bitmap, bitmap_size);
-      my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
-      my_tree->delete_nodes(node, 1);
+      if (node->is_two) {
+        node->writeUnlock();
+        my_tree->pending_two[omp_get_thread_num()].push(node);
+      } else {
+        my_tree->delete_items(node->items, node->num_items);
+        const int bitmap_size = BITMAP_SIZE(node->num_items);
+        my_tree->delete_bitmap(node->none_bitmap, bitmap_size);
+        my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
+        my_tree->delete_nodes(node, 1);
+      }
       delete ptr;
       return;
     };
@@ -1180,8 +1185,9 @@ private:
           node->num_inserts = node->num_insert_to_data = 0;
           node->none_bitmap[0] = 0xff;
           node->child_bitmap[0] = 0;
-          node->writeUnlock();
-          pending_two[omp_get_thread_num()].push(node);
+          // node->writeUnlock();
+          // pending_two[omp_get_thread_num()].push(node);
+          safe_delete_nodes(node, 1);
         } else {
           /*
           delete_items(node->items, node->num_items);
