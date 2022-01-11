@@ -273,7 +273,8 @@ public:
         destroy_tree(node);
       }
       if (!QUIET) {
-        printf("initial memory pool size = %lu\n", pending_two.size());
+        printf("initial memory pool size = %lu\n",
+               pending_two[omp_get_thread_num()].size());
       }
     }
     if (USE_FMCD && !QUIET) {
@@ -591,7 +592,7 @@ private:
 
   Node *root;
   int adjustsuccess = 0;
-  thread_local inline static std::stack<Node *> pending_two;
+  std::stack<Node *> pending_two[1024];
 
   std::allocator<Node> node_allocator;
   Node *new_nodes(int n) {
@@ -675,7 +676,7 @@ private:
     static_assert(BITMAP_WIDTH == 8);
 
     Node *node = NULL;
-    if (pending_two.empty()) {
+    if (pending_two[omp_get_thread_num()].empty()) {
       node = new_nodes(1);
       node->is_two = 1;
       node->build_size = 2;
@@ -690,8 +691,8 @@ private:
       node->none_bitmap[0] = 0xff;
       node->child_bitmap[0] = 0;
     } else {
-      node = pending_two.top();
-      pending_two.pop();
+      node = pending_two[omp_get_thread_num()].top();
+      pending_two[omp_get_thread_num()].pop();
     }
 
     const long double mid1_key = key1;
@@ -1020,15 +1021,17 @@ private:
   }
 
   void destory_pending() {
-    while (!pending_two.empty()) {
-      Node *node = pending_two.top();
-      pending_two.pop();
+    for (int i = 0; i < 1024; ++i) {
+      while (!pending_two[i].empty()) {
+        Node *node = pending_two[i].top();
+        pending_two[i].pop();
 
-      delete_items(node->items, node->num_items);
-      const int bitmap_size = BITMAP_SIZE(node->num_items);
-      delete_bitmap(node->none_bitmap, bitmap_size);
-      delete_bitmap(node->child_bitmap, bitmap_size);
-      delete_nodes(node, 1);
+        delete_items(node->items, node->num_items);
+        const int bitmap_size = BITMAP_SIZE(node->num_items);
+        delete_bitmap(node->none_bitmap, bitmap_size);
+        delete_bitmap(node->child_bitmap, bitmap_size);
+        delete_nodes(node, 1);
+      }
     }
   }
 
@@ -1052,7 +1055,7 @@ private:
         node->num_inserts = node->num_insert_to_data = 0;
         node->none_bitmap[0] = 0xff;
         node->child_bitmap[0] = 0;
-        pending_two.push(node);
+        pending_two[omp_get_thread_num()].push(node);
       } else {
         delete_items(node->items, node->num_items);
         const int bitmap_size = BITMAP_SIZE(node->num_items);
@@ -1178,7 +1181,7 @@ private:
           node->none_bitmap[0] = 0xff;
           node->child_bitmap[0] = 0;
           node->writeUnlock();
-          pending_two.push(node);
+          pending_two[omp_get_thread_num()].push(node);
         } else {
           /*
           delete_items(node->items, node->num_items);
