@@ -44,7 +44,7 @@ typedef uint8_t bitmap_t;
 typedef void (*dealloc_func)(void *ptr);
 
 // runtime debug
-#define DEBUG 1
+#define DEBUG 0
 
 #if DEBUG
 #define RESET "\033[0m"
@@ -1073,8 +1073,7 @@ private:
 
   int scan_and_destory_tree(
       Node *_subroot, T **keys, P **values, // keys here is ptr to ptr
-      bool destory = true) { // turn to false and shall pass to epoch reclaim
-                             // later because of multi-threading
+      bool destory = true) { 
 
     std::list<Node *> bfs;
     std::list<Node *> lockedNodes;
@@ -1211,10 +1210,8 @@ private:
       yield(restartCount);
     bool needRestart = false;
 
-    // if (_node != root)
-    //    goto restart;
-    if (restartCount % 1000 == 1)
-      RT_DEBUG("Insert_tree (%d) restartCount=%d", key, restartCount);
+    // if (restartCount % 1000 == 1)
+    //   RT_DEBUG("Insert_tree (%d) restartCount=%d", key, restartCount);
 
     constexpr int MAX_DEPTH = 128;
     Node *path[MAX_DEPTH];
@@ -1323,7 +1320,7 @@ private:
           node->fixed == 0 && node->size >= node->build_size * 4 &&
           node->size >= 64 && num_insert_to_data * 10 >= num_inserts;
 
-      // const bool need_rebuild = false; //temporary disable
+      // const bool need_rebuild = false; //@Poh: comment and uncomment above and here
 
       if (need_rebuild) {
         // const int ESIZE = node->size; //race here
