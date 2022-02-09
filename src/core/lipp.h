@@ -1261,6 +1261,9 @@ private:
         node->items[pos].comp.data.key = key;
         node->items[pos].comp.data.value = value;
 
+        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
+                      // other threads can't carry out adjust
+
         for (int i = 0; i < path_size; i++) {
           path[i]->num_insert_to_data += insert_to_data;
           path[i]->num_inserts++;
@@ -1270,8 +1273,7 @@ private:
                    key, path[i], path[i]->size.load(), path[i]->num_inserts,
                    path[i]->num_insert_to_data);
         }
-        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
-                             // other threads can't carry out adjust
+
         RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
 
         break;
@@ -1284,6 +1286,9 @@ private:
                            node->items[pos].comp.data.value);
         insert_to_data = 1;
 
+        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
+                      // other threads can't carry out adjust
+                      
         for (int i = 0; i < path_size; i++) {
           path[i]->num_insert_to_data += insert_to_data;
           path[i]->num_inserts++;
@@ -1294,8 +1299,6 @@ private:
                    path[i]->num_insert_to_data);
         }
 
-        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
-                             // other threads can't carry out adjust
         RT_DEBUG("New child %p (of size %d) created at %p and Unlocked",
                  node->items[pos].comp.child,
                  node->items[pos].comp.child->size.load(), node);
