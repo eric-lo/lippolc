@@ -1,6 +1,3 @@
-#ifndef __LIPP_H__
-#define __LIPP_H__
-
 #include "concurrency.h"
 #include "lipp_base.h"
 #include "omp.h"
@@ -75,6 +72,8 @@ typedef void (*dealloc_func)(void *ptr);
 #if COLLECT_TIME
 #include <chrono>
 #endif
+
+namespace lippolc {
 
 template <class T, class P, bool USE_FMCD = true> class LIPP {
   static_assert(std::is_arithmetic<T>::value, "LIPP key type must be numeric.");
@@ -353,14 +352,14 @@ public:
           goto restart; // if child is locked by another thread, restart
       } else {          // the entry is a data
         if (skip_existence_check) {
-          if (parent) { // unlock the parent
-            parent->readUnlockOrRestart(
-                versionParent,
-                needRestart); // echo ^; unlock the read lock of parent; in fact
-                              // can unlock earlier
-            if (needRestart)
-              goto restart;
-          }
+          // if (parent) { // unlock the parent
+          //   parent->readUnlockOrRestart(
+          //       versionParent,
+          //       needRestart); // echo ^; unlock the read lock of parent; in fact
+          //                     // can unlock earlier
+          //   if (needRestart)
+          //     goto restart;
+          // }
           node->readUnlockOrRestart(
               versionNode, needRestart); // as this is the leaf node, unlock it
           if (needRestart)
@@ -372,14 +371,14 @@ public:
             RT_ASSERT(false);
           } else if (BITMAP_GET(node->child_bitmap, pos) == 0) {
             RT_ASSERT(node->items[pos].comp.data.key == key);
-            if (parent) { // unlock the parent
-              parent->readUnlockOrRestart(
-                  versionParent,
-                  needRestart); // echo ^; unlock the read lock of parent; in
-                                // fact can unlock earlier
-              if (needRestart)
-                goto restart;
-            }
+            // if (parent) { // unlock the parent
+            //   parent->readUnlockOrRestart(
+            //       versionParent,
+            //       needRestart); // echo ^; unlock the read lock of parent; in
+            //                     // fact can unlock earlier
+            //   if (needRestart)
+            //     goto restart;
+            // }
             node->readUnlockOrRestart(
                 versionNode,
                 needRestart); // as this is the leaf node, unlock it
@@ -580,7 +579,7 @@ private:
     std::atomic<int> size; // current subtree size
     // int size;
     int fixed; // fixed node will not trigger rebuild
-    int num_inserts, num_insert_to_data;
+    std::atomic<int> num_inserts, num_insert_to_data;
     std::atomic<int> num_items; // number of slots
     // int num_items;
     LinearModel<T> model;
@@ -1204,7 +1203,7 @@ private:
 
   // Node* insert_tree(Node *_node, const T &key, const P &value) {
   bool insert_tree(const T &key, const P &value) {
-    int restartCount = 0;
+    int restartCount = 0; 
   restart:
     if (restartCount++)
       yield(restartCount);
@@ -1220,33 +1219,33 @@ private:
 
     // for lock coupling
     Node *parent = nullptr;
-    // uint64_t versionParent;
+    uint64_t versionParent;
 
     // for (Node *node = _node;;) {
     for (Node *node = root;;) {
-
-      node->writeLockOrRestart(needRestart);
+      // R-lock this node
+      uint64_t versionNode = node->readLockOrRestart(needRestart);
       if (needRestart) {
-        // if (restartCount % 1000==1)
-        RT_DEBUG("Xlock %p FAIL, unlock par %p, restartCount=%d", node, parent,
-                 restartCount);
-        if (parent)
-          parent->writeUnlock();
+        // if (parent)  //in theory we need to "unlock" parent, but since read
+        // unlock decides whether to restart, and we are restarting anyway here
+        //     parent->readUnlockOrRestart(versionParent, needRestart);
         goto restart;
       }
       if (!parent &&
           (node != root)) { // my parent is deleted by some others; I am
                             // obsolete already!  So, unlock myself and restart
-        node->writeUnlock();
+        // node->writeUnlock();
         goto restart;
       }
-
-      // RT_DEBUG("Xlock %p OK", node);
-      //  RT_ASSERT(parent == node);
-      //  if I get the x-lock, shall unlock parent
-      if (parent) {
-        parent->writeUnlock();
-        // RT_DEBUG("Unlock parent %p", parent);
+      // if I get the r-lock, shall unlock parent r-lock
+      if (parent)
+        parent->readUnlockOrRestart(versionParent, needRestart);
+      if (needRestart) {
+        // in theory we need to "unlock" this node, but since read unlock
+        // decides whether to restart, and we are restarting anyway here
+        // node->readUnlockOrRestart(); //physically no need to unlock parent
+        // because it
+        goto restart;
       }
 
       RT_ASSERT(path_size < MAX_DEPTH);
@@ -1256,61 +1255,91 @@ private:
 
       if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
       {
+        RT_DEBUG("Key %d inserting into node %p. Empty Entry. Locking", key, node);
+        node->upgradeToWriteLockOrRestart(versionNode, needRestart);
+        if (needRestart) {
+          RT_DEBUG("Xlock %p fail", node);
+          // node->writeUnlock();
+          goto restart;
+        }
+
+        // // safe already, as this case won't touch the parent, unlock parent
+        // if (parent)
+        //   parent->readUnlockOrRestart(versionParent, needRestart);
+        // if (needRestart) {
+        //   node->writeUnlock(); // give up the X-lock of this node
+        //   goto restart;
+        // }
 
         BITMAP_CLEAR(node->none_bitmap, pos);
         node->items[pos].comp.data.key = key;
         node->items[pos].comp.data.value = value;
 
+        RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
+
         node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
                       // other threads can't carry out adjust
-
-        for (int i = 0; i < path_size; i++) {
-          path[i]->num_insert_to_data += insert_to_data;
-          path[i]->num_inserts++;
-          path[i]->size++;
-          RT_DEBUG("Post insert(%d): update per node stat: %p size=%d, "
-                   "num_insert=%d, num_insert_to_data=%d",
-                   key, path[i], path[i]->size.load(), path[i]->num_inserts,
-                   path[i]->num_insert_to_data);
-        }
-
-        RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
 
         break;
       } else if (BITMAP_GET(node->child_bitmap, pos) ==
                  0) // 0 means existing entry has data already
       {
+        RT_DEBUG("Key %d inserting into node %p. Occupied Entry. Locking", key, node);
+        node->upgradeToWriteLockOrRestart(versionNode, needRestart);
+        if (needRestart) {
+          RT_DEBUG("Xlock %p fail", node);
+          // node->writeUnlock();
+          goto restart;
+        }
+
+        // // safe already, unlock parent
+        // if (parent)
+        //   parent->readUnlockOrRestart(versionParent, needRestart);
+        // if (needRestart) {
+        //   node->writeUnlock();
+        //   goto restart;
+        // }
+
         BITMAP_SET(node->child_bitmap, pos);
         node->items[pos].comp.child =
             build_tree_two(key, value, node->items[pos].comp.data.key,
                            node->items[pos].comp.data.value);
         insert_to_data = 1;
 
+        RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
+
         node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
                       // other threads can't carry out adjust
-                      
-        for (int i = 0; i < path_size; i++) {
-          path[i]->num_insert_to_data += insert_to_data;
-          path[i]->num_inserts++;
-          path[i]->size++;
-          RT_DEBUG("Post insert(%d): update per node stat: %p size=%d, "
-                   "num_insert=%d, num_insert_to_data=%d",
-                   key, path[i], path[i]->size.load(), path[i]->num_inserts,
-                   path[i]->num_insert_to_data);
-        }
-
-        RT_DEBUG("New child %p (of size %d) created at %p and Unlocked",
-                 node->items[pos].comp.child,
-                 node->items[pos].comp.child->size.load(), node);
+        
         break;
       } else // 1 means has a child, need to go down and see
       {
         // set parent=<current inner node>, and set node=<child-node>
         parent = node;
-        node = node->items[pos].comp.child;
-        //***** this case, never exit the for loop here, so no need to
-        // unlock****//
+        versionParent = versionNode;
+        
+        node = node->items[pos].comp.child;           // now: node is the child
+
+        // parent->checkOrRestart(versionNode, needRestart);
+        // if (needRestart)
+        //   goto restart; // if parent has changed: restart
+
+        // parent->checkOrRestart(
+        //     versionParent, needRestart); // to ensure nobody else has modified
+        //                                  // the new parent in between
+        // if (needRestart)
+        //   goto restart; // if child is locked by another thread, restart
       }
+    }
+
+    for (int i = 0; i < path_size; i++) {
+      path[i]->num_insert_to_data += insert_to_data;
+      path[i]->num_inserts++;
+      path[i]->size++;
+      RT_DEBUG("Post insert(%d): update per node stat: %p size=%d, "
+                "num_insert=%d, num_insert_to_data=%d",
+                key, path[i], path[i]->size.load(), path[i]->num_inserts,
+                path[i]->num_insert_to_data);
     }
 
     //***** so, when reaching here, no node is locked.
@@ -1417,4 +1446,4 @@ private:
   } // end of insert_tree
 };
 
-#endif // __LIPP_H__
+}
