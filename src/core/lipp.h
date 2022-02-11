@@ -1259,7 +1259,7 @@ private:
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
           RT_DEBUG("Xlock %p fail", node);
-          node->writeUnlock();
+          // node->writeUnlock();
           goto restart;
         }
 
@@ -1288,7 +1288,7 @@ private:
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
           RT_DEBUG("Xlock %p fail", node);
-          node->writeUnlock();
+          // node->writeUnlock();
           goto restart;
         }
 
