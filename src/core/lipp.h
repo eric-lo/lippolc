@@ -345,9 +345,9 @@ public:
                                     // version number of the (new) parent
         node = node->items[pos].comp.child;           // now: node is the child
 
-        // parent->checkOrRestart(versionNode, needRestart);
-        // if (needRestart)
-        //   goto restart; // if parent has changed: restart
+        parent->checkOrRestart(versionNode, needRestart);
+        if (needRestart)
+          goto restart; // if parent has changed: restart
 
       } else {          // the entry is a data
         if (skip_existence_check) {
@@ -1226,8 +1226,6 @@ private:
       {
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
-          RT_DEBUG("Xlock %p fail", node);
-          // node->writeUnlock();
           goto restart;
         }
 
@@ -1246,8 +1244,6 @@ private:
       {
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
-          RT_DEBUG("Xlock %p fail", node);
-          // node->writeUnlock();
           goto restart;
         }
 
@@ -1271,11 +1267,11 @@ private:
         
         node = node->items[pos].comp.child;           // now: node is the child
 
-        // parent->checkOrRestart(
-        //     versionParent, needRestart); // to ensure nobody else has modified
-        //                                  // the new parent in between
-        // if (needRestart)
-        //   goto restart; // if child is locked by another thread, restart
+        parent->checkOrRestart(
+            versionParent, needRestart); // to ensure nobody else has modified
+                                         // the new parent in between
+        if (needRestart)
+          goto restart; // if child is locked by another thread, restart
       }
     }
 
