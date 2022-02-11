@@ -305,23 +305,12 @@ public:
       yield(restartCount);
     bool needRestart = false;
 
-    Node *node = root;
-    // readlock not exactly "locking", but just use it, it is fine for not
-    // knowing the detail
-    //  if root readlock is on, somebody is changing root, I restart and come
-    //  back later
-    uint64_t versionNode = node->readLockOrRestart(
-        needRestart); // since lookup is ready only, so just use like rw-lock
-                      // and "readlock" the node
-    if (needRestart)
-      goto restart;
-
     // for lock coupling
     Node *parent = nullptr;
     uint64_t versionParent;
 
     for (Node *node = root;;) {
-      versionNode = node->readLockOrRestart(
+      uint64_t versionNode = node->readLockOrRestart(
           needRestart); // set versionNode be child's version; read "lock" the
                         // child
       if (needRestart)
@@ -345,7 +334,7 @@ public:
                                     // version number of the (new) parent
         node = node->items[pos].comp.child;           // now: node is the child
 
-        parent->checkOrRestart(versionNode, needRestart);
+        parent->checkOrRestart(versionParent, needRestart);
         if (needRestart)
           goto restart; // if parent has changed: restart
 
