@@ -370,7 +370,6 @@ public:
           if (BITMAP_GET(node->none_bitmap, pos) == 1) {
             RT_ASSERT(false);
           } else if (BITMAP_GET(node->child_bitmap, pos) == 0) {
-            RT_ASSERT(node->items[pos].comp.data.key == key);
             // if (parent) { // unlock the parent
             //   parent->readUnlockOrRestart(
             //       versionParent,
@@ -385,6 +384,7 @@ public:
             if (needRestart)
               goto restart;
 
+            RT_ASSERT(node->items[pos].comp.data.key == key);
             return node->items[pos].comp.data.value;
           }
         }
@@ -573,7 +573,7 @@ private:
       Node *child;
     } comp;
   };
-  struct Node : lippolc::OptLock {
+  struct Node : OptLock {
     int is_two;            // is special node for only two keys
     int build_size;        // tree size (include sub nodes) when node created
     std::atomic<int> size; // current subtree size
@@ -596,10 +596,10 @@ private:
   std::allocator<Node> node_allocator;
   Node *new_nodes(int n) {
     Node *p = node_allocator.allocate(n);
-    for (int i = 0; i < n; ++i) {
-      auto lock = reinterpret_cast<lippolc::OptLock *>(p + i);
-      lock->typeVersionLockObsolete.store(0b100);
-    }
+    // for (int i = 0; i < n; ++i) {
+    //   auto lock = reinterpret_cast<OptLock *>(p + i);
+    //   lock->typeVersionLockObsolete.store(0b100);
+    // }
 
     RT_ASSERT(p != NULL && p != (Node *)(-1));
     return p;
@@ -1231,12 +1231,12 @@ private:
         //     parent->readUnlockOrRestart(versionParent, needRestart);
         goto restart;
       }
-      if (!parent &&
-          (node != root)) { // my parent is deleted by some others; I am
-                            // obsolete already!  So, unlock myself and restart
-        // node->writeUnlock();
-        goto restart;
-      }
+      // if (!parent &&
+      //     (node != root)) { // my parent is deleted by some others; I am
+      //                       // obsolete already!  So, unlock myself and restart
+      //   // node->writeUnlock();
+      //   goto restart;
+      // }
       // if I get the r-lock, shall unlock parent r-lock
       if (parent)
         parent->readUnlockOrRestart(versionParent, needRestart);
@@ -1259,7 +1259,7 @@ private:
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
           RT_DEBUG("Xlock %p fail", node);
-          // node->writeUnlock();
+          node->writeUnlock();
           goto restart;
         }
 
@@ -1288,7 +1288,7 @@ private:
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
           RT_DEBUG("Xlock %p fail", node);
-          // node->writeUnlock();
+          node->writeUnlock();
           goto restart;
         }
 
@@ -1320,15 +1320,11 @@ private:
         
         node = node->items[pos].comp.child;           // now: node is the child
 
-        // parent->checkOrRestart(versionNode, needRestart);
-        // if (needRestart)
-        //   goto restart; // if parent has changed: restart
-
-        // parent->checkOrRestart(
-        //     versionParent, needRestart); // to ensure nobody else has modified
-        //                                  // the new parent in between
-        // if (needRestart)
-        //   goto restart; // if child is locked by another thread, restart
+        parent->checkOrRestart(
+            versionParent, needRestart); // to ensure nobody else has modified
+                                         // the new parent in between
+        if (needRestart)
+          goto restart; // if child is locked by another thread, restart
       }
     }
 
