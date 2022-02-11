@@ -313,14 +313,19 @@ public:
     uint64_t versionNode = node->readLockOrRestart(
         needRestart); // since lookup is ready only, so just use like rw-lock
                       // and "readlock" the node
-    if (needRestart || (node != root))
+    if (needRestart)
       goto restart;
 
     // for lock coupling
     Node *parent = nullptr;
     uint64_t versionParent;
 
-    while (true) {
+    for (Node *node = root;;) {
+      versionNode = node->readLockOrRestart(
+          needRestart); // set versionNode be child's version; read "lock" the
+                        // child
+      if (needRestart)
+        goto restart; // if child is locked by another thread, restart
 
       if (parent) { // unless this is the 1st time (root), otherwise the child
                     // from the prev iteration would have already been locked
@@ -332,34 +337,20 @@ public:
           goto restart; // parent is contaminated, restart search
       }
 
-      // now ready for the tree traversal
-      parent = node; // initialize new parent to be the (current) node---(2)
-      versionParent = versionNode; // initialize versionparent to be the fetched
-                                   // version number of the (new) parent
-
       int pos = PREDICT_POS(node, key);
       if (BITMAP_GET(node->child_bitmap, pos) == 1) { // 1 means child
+        // now ready for the tree traversal
+        parent = node; // initialize new parent to be the (current) node---(2)
+        versionParent = versionNode; // initialize versionparent to be the fetched
+                                    // version number of the (new) parent
         node = node->items[pos].comp.child;           // now: node is the child
 
-        parent->checkOrRestart(versionNode, needRestart);
-        if (needRestart)
-          goto restart; // if parent has changed: restart
+        // parent->checkOrRestart(versionNode, needRestart);
+        // if (needRestart)
+        //   goto restart; // if parent has changed: restart
 
-        versionNode = node->readLockOrRestart(
-            needRestart); // set versionNode be child's version; read "lock" the
-                          // child
-        if (needRestart)
-          goto restart; // if child is locked by another thread, restart
       } else {          // the entry is a data
         if (skip_existence_check) {
-          // if (parent) { // unlock the parent
-          //   parent->readUnlockOrRestart(
-          //       versionParent,
-          //       needRestart); // echo ^; unlock the read lock of parent; in fact
-          //                     // can unlock earlier
-          //   if (needRestart)
-          //     goto restart;
-          // }
           node->readUnlockOrRestart(
               versionNode, needRestart); // as this is the leaf node, unlock it
           if (needRestart)
@@ -370,14 +361,6 @@ public:
           if (BITMAP_GET(node->none_bitmap, pos) == 1) {
             RT_ASSERT(false);
           } else if (BITMAP_GET(node->child_bitmap, pos) == 0) {
-            // if (parent) { // unlock the parent
-            //   parent->readUnlockOrRestart(
-            //       versionParent,
-            //       needRestart); // echo ^; unlock the read lock of parent; in
-            //                     // fact can unlock earlier
-            //   if (needRestart)
-            //     goto restart;
-            // }
             node->readUnlockOrRestart(
                 versionNode,
                 needRestart); // as this is the leaf node, unlock it
@@ -596,10 +579,10 @@ private:
   std::allocator<Node> node_allocator;
   Node *new_nodes(int n) {
     Node *p = node_allocator.allocate(n);
-    // for (int i = 0; i < n; ++i) {
-    //   auto lock = reinterpret_cast<OptLock *>(p + i);
-    //   lock->typeVersionLockObsolete.store(0b100);
-    // }
+    for (int i = 0; i < n; ++i) {
+      p[i].typeVersionLockObsolete.store(0b100);
+      // lock->typeVersionLockObsolete.store(0b100);
+    }
 
     RT_ASSERT(p != NULL && p != (Node *)(-1));
     return p;
@@ -1209,9 +1192,6 @@ private:
       yield(restartCount);
     bool needRestart = false;
 
-    // if (restartCount % 1000 == 1)
-    //   RT_DEBUG("Insert_tree (%d) restartCount=%d", key, restartCount);
-
     constexpr int MAX_DEPTH = 128;
     Node *path[MAX_DEPTH];
     int path_size = 0;
@@ -1221,22 +1201,11 @@ private:
     Node *parent = nullptr;
     uint64_t versionParent;
 
-    // for (Node *node = _node;;) {
     for (Node *node = root;;) {
       // R-lock this node
       uint64_t versionNode = node->readLockOrRestart(needRestart);
-      if (needRestart) {
-        // if (parent)  //in theory we need to "unlock" parent, but since read
-        // unlock decides whether to restart, and we are restarting anyway here
-        //     parent->readUnlockOrRestart(versionParent, needRestart);
+      if (needRestart)
         goto restart;
-      }
-      // if (!parent &&
-      //     (node != root)) { // my parent is deleted by some others; I am
-      //                       // obsolete already!  So, unlock myself and restart
-      //   // node->writeUnlock();
-      //   goto restart;
-      // }
       // if I get the r-lock, shall unlock parent r-lock
       if (parent)
         parent->readUnlockOrRestart(versionParent, needRestart);
@@ -1255,21 +1224,12 @@ private:
 
       if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
       {
-        RT_DEBUG("Key %d inserting into node %p. Empty Entry. Locking", key, node);
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
           RT_DEBUG("Xlock %p fail", node);
           // node->writeUnlock();
           goto restart;
         }
-
-        // // safe already, as this case won't touch the parent, unlock parent
-        // if (parent)
-        //   parent->readUnlockOrRestart(versionParent, needRestart);
-        // if (needRestart) {
-        //   node->writeUnlock(); // give up the X-lock of this node
-        //   goto restart;
-        // }
 
         BITMAP_CLEAR(node->none_bitmap, pos);
         node->items[pos].comp.data.key = key;
@@ -1284,21 +1244,12 @@ private:
       } else if (BITMAP_GET(node->child_bitmap, pos) ==
                  0) // 0 means existing entry has data already
       {
-        RT_DEBUG("Key %d inserting into node %p. Occupied Entry. Locking", key, node);
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
           RT_DEBUG("Xlock %p fail", node);
           // node->writeUnlock();
           goto restart;
         }
-
-        // // safe already, unlock parent
-        // if (parent)
-        //   parent->readUnlockOrRestart(versionParent, needRestart);
-        // if (needRestart) {
-        //   node->writeUnlock();
-        //   goto restart;
-        // }
 
         BITMAP_SET(node->child_bitmap, pos);
         node->items[pos].comp.child =
@@ -1320,11 +1271,11 @@ private:
         
         node = node->items[pos].comp.child;           // now: node is the child
 
-        parent->checkOrRestart(
-            versionParent, needRestart); // to ensure nobody else has modified
-                                         // the new parent in between
-        if (needRestart)
-          goto restart; // if child is locked by another thread, restart
+        // parent->checkOrRestart(
+        //     versionParent, needRestart); // to ensure nobody else has modified
+        //                                  // the new parent in between
+        // if (needRestart)
+        //   goto restart; // if child is locked by another thread, restart
       }
     }
 

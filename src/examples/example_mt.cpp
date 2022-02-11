@@ -6,7 +6,7 @@
 using namespace std;
 
 int main() {
-  LIPP<int, int> lipp;
+  lippolc::LIPP<int, int> lipp;
 
   int key_num = 500;
   omp_set_num_threads(3);
