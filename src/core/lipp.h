@@ -316,16 +316,6 @@ public:
       if (needRestart)
         goto restart; // if child is locked by another thread, restart
 
-      // if (parent) { // unless this is the 1st time (root), otherwise the child
-      //               // from the prev iteration would have already been locked
-      //               // before the end of the loop
-      //   parent->readUnlockOrRestart(
-      //       versionParent,
-      //       needRestart); // so it is already safe to unlock the parent
-      //   if (needRestart)
-      //     goto restart; // parent is contaminated, restart search
-      // }
-
       int pos = PREDICT_POS(node, key);
       if (BITMAP_GET(node->child_bitmap, pos) == 1) { // 1 means child
         // now ready for the tree traversal
@@ -1195,16 +1185,6 @@ private:
       uint64_t versionNode = node->readLockOrRestart(needRestart);
       if (needRestart)
         goto restart;
-      // if I get the r-lock, shall unlock parent r-lock
-      // if (parent)
-      //   parent->readUnlockOrRestart(versionParent, needRestart);
-      // if (needRestart) {
-      //   // in theory we need to "unlock" this node, but since read unlock
-      //   // decides whether to restart, and we are restarting anyway here
-      //   // node->readUnlockOrRestart(); //physically no need to unlock parent
-      //   // because it
-      //   goto restart;
-      // }
 
       RT_ASSERT(path_size < MAX_DEPTH);
       path[path_size++] = node;
