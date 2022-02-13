@@ -1,3 +1,6 @@
+#ifndef __LIPPOL_H__
+#define __LIPPOL_H__
+
 #include "concurrency.h"
 #include "lipp_base.h"
 #include "omp.h"
@@ -1359,3 +1362,5 @@ private:
 };
 
 }
+
+#endif
