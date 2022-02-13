@@ -310,19 +310,29 @@ public:
         }
       }
     }
-    int result[max_level+1];
+    unsigned long long contention[max_level+1];
+    unsigned long lock[max_level+1];
+    unsigned long nodes[max_level+1];
+    for(int i = 0; i <= max_level; i++){
+      contention[i] = 0;
+      lock[i] = 0;
+      nodes[i] = 0;
+    }
+    s.push(root);
     while (!s.empty()) {
       Node* node = s.top(); s.pop();
+      contention[node->level] += node->restart_cnt;
+      lock[node->level] += node->lock_cnt;
+      nodes[node->level] += 1;
       for (int i = 0; i < node->num_items; i ++) {
-        result[node->level] += node->restart_cnt;
         if (BITMAP_GET(node->child_bitmap, i) == 1) {
           s.push(node->items[i].comp.child);
         }
       }
     }
-    printf("Contention\n");
+    printf("\nContention, Lock, Nodes\n");
     for(int i = 0; i <= max_level; i++){
-      printf("level %d: %d\n", i, result[i]);
+      printf("level %d: %d, %d, %d\n", i, contention[i], lock[i], nodes[i]);
     }
   }
 
@@ -594,7 +604,8 @@ private:
     bitmap_t *none_bitmap; // 1 means empty entry, 0 means Data or Child
     bitmap_t
         *child_bitmap; // 1 means Child. will always be 0 when none_bitmap is 1
-    std::atomic<unsigned int> restart_cnt;
+    std::atomic<unsigned long long> restart_cnt;
+    std::atomic<unsigned long> lock_cnt;
     int level;
   };
 
@@ -609,6 +620,7 @@ private:
       p[i].typeVersionLockObsolete.store(0b100);
       // lock->typeVersionLockObsolete.store(0b100);
       p[i].restart_cnt = 0;
+      p[i].lock_cnt = 0;
     }
 
     RT_ASSERT(p != NULL && p != (Node *)(-1));
@@ -1100,6 +1112,7 @@ private:
       bool needRestart = false;
       node->writeLockOrRestart(needRestart);
       if (needRestart) {
+        node->restart_cnt++;
         // release locks on all locked ancestors
         RT_DEBUG("ADJUST: Xlock %p fail, unlocking all locked", node);
         for (auto &n : lockedNodes) {
@@ -1108,6 +1121,7 @@ private:
 
         return -1;
       }
+      node->lock_cnt++;
       // x-lock this node SUCCESS
       lockedNodes.push_back(node);
 
@@ -1245,10 +1259,10 @@ private:
       {
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
-          node->restart_cnt++;
+          node->restart_cnt++;  
           goto restart;
         }
-
+        node->lock_cnt++;
         BITMAP_CLEAR(node->none_bitmap, pos);
         node->items[pos].comp.data.key = key;
         node->items[pos].comp.data.value = value;
@@ -1268,6 +1282,7 @@ private:
           goto restart;
         }
 
+        node->lock_cnt++;
         BITMAP_SET(node->child_bitmap, pos);
         node->items[pos].comp.child =
             build_tree_two(key, value, node->items[pos].comp.data.key,
@@ -1388,10 +1403,12 @@ private:
 
           path[i - 1]->writeLockOrRestart(needRetry);
           if (needRetry) {
+            path[i - 1]->restart_cnt++;
             RT_DEBUG("Final step of adjust, obtain parent %p lock FAIL, retry",
                      path[i - 1]);
             goto retryLock;
           }
+          path[i - 1]->lock_cnt++;
           RT_DEBUG("Final step of adjust, obtain parent %p lock OK, now give "
                    "the adjusted tree to parent",
                    path[i - 1]);
