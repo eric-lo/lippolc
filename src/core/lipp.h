@@ -1,3 +1,6 @@
+#ifndef __LIPPOL_H__
+#define __LIPPOL_H__
+
 #include "concurrency.h"
 #include "lipp_base.h"
 #include "omp.h"
@@ -289,6 +292,40 @@ public:
     destory_pending();
   }
 
+  void contention() {
+    std::stack<Node*> s;
+    s.push(root);
+    int max_level = 0;
+    root->level = 0;
+
+    while (!s.empty()) {
+      Node* node = s.top(); s.pop();
+      for (int i = 0; i < node->num_items; i ++) {
+        if (BITMAP_GET(node->child_bitmap, i) == 1) {
+          int this_level = node->level + 1;
+          if(this_level > max_level)
+            max_level = this_level;
+          node->items[i].comp.child->level = this_level;
+          s.push(node->items[i].comp.child);
+        }
+      }
+    }
+    int result[max_level+1];
+    while (!s.empty()) {
+      Node* node = s.top(); s.pop();
+      for (int i = 0; i < node->num_items; i ++) {
+        result[node->level] += node->restart_cnt;
+        if (BITMAP_GET(node->child_bitmap, i) == 1) {
+          s.push(node->items[i].comp.child);
+        }
+      }
+    }
+    printf("Contention\n");
+    for(int i = 0; i <= max_level; i++){
+      printf("level %d: %d\n", i, result[i]);
+    }
+  }
+
   void insert(const V &v) { insert(v.first, v.second); }
   void insert(const T &key, const P &value) {
     EpochGuard guard;
@@ -313,8 +350,10 @@ public:
       uint64_t versionNode = node->readLockOrRestart(
           needRestart); // set versionNode be child's version; read "lock" the
                         // child
-      if (needRestart)
-        goto restart; // if child is locked by another thread, restart
+      if (needRestart) {
+        node->restart_cnt++;
+        goto restart;
+      } // if child is locked by another thread, restart
 
       int pos = PREDICT_POS(node, key);
       if (BITMAP_GET(node->child_bitmap, pos) == 1) { // 1 means child
@@ -325,15 +364,19 @@ public:
         node = node->items[pos].comp.child;           // now: node is the child
 
         parent->readUnlockOrRestart(versionParent, needRestart);
-        if (needRestart)
-          goto restart; // if parent has changed: restart
+        if (needRestart) {
+          parent->restart_cnt++;
+          goto restart;
+        } // if parent has changed: restart
 
       } else {          // the entry is a data
         if (skip_existence_check) {
           node->readUnlockOrRestart(
               versionNode, needRestart); // as this is the leaf node, unlock it
-          if (needRestart)
+          if (needRestart) {
+            node->restart_cnt++;
             goto restart;
+          }
 
           return node->items[pos].comp.data.value;
         } else {
@@ -343,8 +386,10 @@ public:
             node->readUnlockOrRestart(
                 versionNode,
                 needRestart); // as this is the leaf node, unlock it
-            if (needRestart)
+            if (needRestart) {
+              node->restart_cnt++;
               goto restart;
+            }
 
             RT_ASSERT(node->items[pos].comp.data.key == key);
             return node->items[pos].comp.data.value;
@@ -549,6 +594,8 @@ private:
     bitmap_t *none_bitmap; // 1 means empty entry, 0 means Data or Child
     bitmap_t
         *child_bitmap; // 1 means Child. will always be 0 when none_bitmap is 1
+    std::atomic<unsigned int> restart_cnt;
+    int level;
   };
 
   Node *root;
@@ -561,6 +608,7 @@ private:
     for (int i = 0; i < n; ++i) {
       p[i].typeVersionLockObsolete.store(0b100);
       // lock->typeVersionLockObsolete.store(0b100);
+      p[i].restart_cnt = 0;
     }
 
     RT_ASSERT(p != NULL && p != (Node *)(-1));
@@ -1183,8 +1231,10 @@ private:
     for (Node *node = root;;) {
       // R-lock this node
       uint64_t versionNode = node->readLockOrRestart(needRestart);
-      if (needRestart)
+      if (needRestart) {
+        node->restart_cnt++;
         goto restart;
+      }
 
       RT_ASSERT(path_size < MAX_DEPTH);
       path[path_size++] = node;
@@ -1195,6 +1245,7 @@ private:
       {
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
+          node->restart_cnt++;
           goto restart;
         }
 
@@ -1213,6 +1264,7 @@ private:
       {
         node->upgradeToWriteLockOrRestart(versionNode, needRestart);
         if (needRestart) {
+          node->restart_cnt++;
           goto restart;
         }
 
@@ -1239,8 +1291,10 @@ private:
         parent->checkOrRestart(
             versionParent, needRestart); // to ensure nobody else has modified
                                          // the new parent in between
-        if (needRestart)
-          goto restart; // if child is locked by another thread, restart
+        if (needRestart) {
+          parent->restart_cnt++;
+          goto restart;
+        } // if child is locked by another thread, restart
       }
     }
 
@@ -1359,3 +1413,5 @@ private:
 };
 
 }
+
+#endif

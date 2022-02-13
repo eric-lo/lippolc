@@ -1,3 +1,6 @@
+#ifndef __LIPPOL_CC_H__
+#define __LIPPOL_CC_H__
+
 //
 // Created by zhong on 2021/3/18.
 //
@@ -151,3 +154,5 @@ namespace lippolc {
   // typedef tbb::spin_mutex Alex_strict_mutex;
   // typedef Alex_strict_mutex::scoped_lock Alex_strict_lock;
 }
+
+#endif
