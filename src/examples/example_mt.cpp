@@ -8,11 +8,13 @@ using namespace std;
 int main() {
   lippolc::LIPP<int, int> lipp;
 
-  int key_num = 500;
-  omp_set_num_threads(3);
+  int key_num = 100;
+  // pair<int, int> *keys = new pair<int, int>[key_num];
+  omp_set_num_threads(4);
 
-#pragma omp parallel for schedule(static, 1)
+// #pragma omp parallel for schedule(static, 1)
   for (int i = 0; i < key_num; i++) {
+    // keys[i] = {i, i};
     // printf("Thread %d insert(%d)\n", omp_get_thread_num(), i);
     lipp.insert(i, i);
     // mix write with read
@@ -20,10 +22,14 @@ int main() {
     // printf("Thread %d, read %d\n", omp_get_thread_num(), lipp.at(i-5,
     // false));
   }
+  // printf("bulk loading\n");
+  // lipp.bulk_load(keys, key_num);
+
+  printf("start\n");
 
 #pragma omp parallel for schedule(static, 4)
   for (int i = 0; i < key_num; i++) {
-    int val = lipp.at(i, false);
+    int val = lipp.at(i);
     if (val != i)
       printf("wrong payload at %d\n", i);
   }

@@ -1,3 +1,6 @@
+#ifndef __LIPPOL_H__
+#define __LIPPOL_H__
+
 #include "concurrency.h"
 #include "lipp_base.h"
 #include "omp.h"
@@ -16,17 +19,6 @@
 #include <stdint.h>
 #include <thread>
 #include <vector>
-
-typedef uint8_t bitmap_t;
-#define BITMAP_WIDTH (sizeof(bitmap_t) * 8)
-#define BITMAP_SIZE(num_items) (((num_items) + BITMAP_WIDTH - 1) / BITMAP_WIDTH)
-#define BITMAP_GET(bitmap, pos)                                                \
-  (((bitmap)[(pos) / BITMAP_WIDTH] >> ((pos) % BITMAP_WIDTH)) & 1)
-#define BITMAP_SET(bitmap, pos)                                                \
-  ((bitmap)[(pos) / BITMAP_WIDTH] |= 1 << ((pos) % BITMAP_WIDTH))
-#define BITMAP_CLEAR(bitmap, pos)                                              \
-  ((bitmap)[(pos) / BITMAP_WIDTH] &= ~bitmap_t(1 << ((pos) % BITMAP_WIDTH)))
-#define BITMAP_NEXT_1(bitmap_item) __builtin_ctz((bitmap_item))
 
 // runtime assert
 #define RT_ASSERT(expr)                                                        \
@@ -98,9 +90,6 @@ template <class T, class P, bool USE_FMCD = true> class LIPP {
     return std::min(node->num_items - 1, static_cast<int>(v));
   }
 
-  static void remove_last_bit(bitmap_t &bitmap_item) {
-    bitmap_item -= 1 << BITMAP_NEXT_1(bitmap_item);
-  }
 
   const double BUILD_LR_REMAIN;
   const bool QUIET;
@@ -297,7 +286,7 @@ public:
     RT_DEBUG("Insert_tree(%d): success/fail? %d", key, state);
   }
 
-  P at(const T &key, bool skip_existence_check = true) {
+  P at(const T &key) {
     EpochGuard guard;
     int restartCount = 0;
   restart:
@@ -306,50 +295,48 @@ public:
     bool needRestart = false;
 
     // for lock coupling
-    Node *parent = nullptr;
-    uint64_t versionParent;
+    uint64_t versionItem;
+    Node *parent;
 
     for (Node *node = root;;) {
-      uint64_t versionNode = node->readLockOrRestart(
-          needRestart); // set versionNode be child's version; read "lock" the
-                        // child
-      if (needRestart)
-        goto restart; // if child is locked by another thread, restart
-
       int pos = PREDICT_POS(node, key);
-      if (BITMAP_GET(node->child_bitmap, pos) == 1) { // 1 means child
-        // now ready for the tree traversal
-        parent = node; // initialize new parent to be the (current) node---(2)
-        versionParent = versionNode; // initialize versionparent to be the fetched
-                                    // version number of the (new) parent
-        node = node->items[pos].comp.child;           // now: node is the child
+      versionItem = node->items[pos].readLockOrRestart(needRestart);
+      if (needRestart)
+        goto restart;
 
-        parent->readUnlockOrRestart(versionParent, needRestart);
+      if (node->items[pos].entry_type == 1) { // 1 means child
+        parent = node;
+        node = node->items[pos].comp.child;
+
+        parent->items[pos].readUnlockOrRestart(versionItem, needRestart);
         if (needRestart)
-          goto restart; // if parent has changed: restart
-
-      } else {          // the entry is a data
-        if (skip_existence_check) {
-          node->readUnlockOrRestart(
-              versionNode, needRestart); // as this is the leaf node, unlock it
+          goto restart;
+      } else { // the entry is a data or empty
+        if (node->items[pos].entry_type == 0) { // 0 means empty
+          RT_ASSERT(false);
+        } else { // 2 means data
+          node->items[pos].readUnlockOrRestart(versionItem, needRestart);
           if (needRestart)
             goto restart;
 
+          RT_ASSERT(node->items[pos].comp.data.key == key);
           return node->items[pos].comp.data.value;
-        } else {
-          if (BITMAP_GET(node->none_bitmap, pos) == 1) {
-            RT_ASSERT(false);
-          } else if (BITMAP_GET(node->child_bitmap, pos) == 0) {
-            node->readUnlockOrRestart(
-                versionNode,
-                needRestart); // as this is the leaf node, unlock it
-            if (needRestart)
-              goto restart;
-
-            RT_ASSERT(node->items[pos].comp.data.key == key);
-            return node->items[pos].comp.data.value;
-          }
         }
+      }
+    }
+  }
+
+  bool exists(const T &key) const {
+    EpochGuard guard;
+    Node *node = root;
+    while (true) {
+      int pos = PREDICT_POS(node, key);
+      if (node->items[pos].entry_type == 0) {
+        return false;
+      } else if (node->items[pos].entry_type == 2) {
+        return node->items[pos].comp.data.key == key;
+      } else {
+        node = node->items[pos].comp.child;
       }
     }
   }
@@ -361,20 +348,6 @@ public:
       _mm_pause();
   }
 
-  bool exists(const T &key) const {
-    EpochGuard guard;
-    Node *node = root;
-    while (true) {
-      int pos = PREDICT_POS(node, key);
-      if (BITMAP_GET(node->none_bitmap, pos) == 1) {
-        return false;
-      } else if (BITMAP_GET(node->child_bitmap, pos) == 0) {
-        return node->items[pos].comp.data.key == key;
-      } else {
-        node = node->items[pos].comp.child;
-      }
-    }
-  }
   void bulk_load(const V *vs, int num_keys) {
     if (num_keys == 0) {
       destroy_tree(root);
@@ -411,122 +384,9 @@ public:
     delete[] values;
   }
 
-  void show() const {
-    printf("============= SHOW LIPP ================\n");
-
-    std::stack<Node *> s;
-    s.push(root);
-    while (!s.empty()) {
-      Node *node = s.top();
-      s.pop();
-
-      printf("Node(%p, a = %lf, b = %lf, num_items = %d)", node, node->model.a,
-             node->model.b, node->num_items);
-      printf("[");
-      int first = 1;
-      for (int i = 0; i < node->num_items; i++) {
-        if (!first) {
-          printf(", ");
-        }
-        first = 0;
-        if (BITMAP_GET(node->none_bitmap, i) == 1) {
-          printf("None");
-        } else if (BITMAP_GET(node->child_bitmap, i) == 0) {
-          std::stringstream s;
-          s << node->items[i].comp.data.key;
-          printf("Key(%s)", s.str().c_str());
-        } else {
-          printf("Child(%p)", node->items[i].comp.child);
-          s.push(node->items[i].comp.child);
-        }
-      }
-      printf("]\n");
-    }
-  }
-  void print_depth() const {
-    std::stack<Node *> s;
-    std::stack<int> d;
-    s.push(root);
-    d.push(1);
-
-    int max_depth = 1;
-    int sum_depth = 0, sum_nodes = 0;
-    while (!s.empty()) {
-      Node *node = s.top();
-      s.pop();
-      int depth = d.top();
-      d.pop();
-      for (int i = 0; i < node->num_items; i++) {
-        if (BITMAP_GET(node->child_bitmap, i) == 1) {
-          s.push(node->items[i].comp.child);
-          d.push(depth + 1);
-        } else if (BITMAP_GET(node->none_bitmap, i) != 1) {
-          max_depth = std::max(max_depth, depth);
-          sum_depth += depth;
-          sum_nodes++;
-        }
-      }
-    }
-
-    printf("max_depth = %d, avg_depth = %.2lf\n", max_depth,
-           double(sum_depth) / double(sum_nodes));
-  }
-  void verify() const {
-    std::stack<Node *> s;
-    s.push(root);
-
-    while (!s.empty()) {
-      Node *node = s.top();
-      s.pop();
-      int sum_size = 0;
-      for (int i = 0; i < node->num_items; i++) {
-        if (BITMAP_GET(node->child_bitmap, i) == 1) {
-          s.push(node->items[i].comp.child);
-          sum_size += node->items[i].comp.child->size;
-        } else if (BITMAP_GET(node->none_bitmap, i) != 1) {
-          sum_size++;
-        }
-      }
-      RT_ASSERT(sum_size == node->size);
-    }
-  }
-  void print_stats() const {
-    printf("======== Stats ===========\n");
-    if (USE_FMCD) {
-      printf("\t fmcd_success_times = %lld\n", stats.fmcd_success_times);
-      printf("\t fmcd_broken_times = %lld\n", stats.fmcd_broken_times);
-    }
-#if COLLECT_TIME
-    printf("\t time_scan_and_destory_tree = %lf\n",
-           stats.time_scan_and_destory_tree);
-    printf("\t time_build_tree_bulk = %lf\n", stats.time_build_tree_bulk);
-#endif
-  }
-  size_t index_size() const {
-    std::stack<Node *> s;
-    s.push(root);
-
-    size_t size = 0;
-    while (!s.empty()) {
-      Node *node = s.top();
-      s.pop();
-      bool has_child = false;
-      for (int i = 0; i < node->num_items; i++) {
-        if (BITMAP_GET(node->child_bitmap, i) == 1) {
-          size += sizeof(Item);
-          has_child = true;
-          s.push(node->items[i].comp.child);
-        }
-      }
-      if (has_child)
-        size += sizeof(*node);
-    }
-    return size;
-  }
-
 private:
   struct Node;
-  struct Item {
+  struct Item : OptLock {
     union {
       struct {
         T key;
@@ -534,8 +394,9 @@ private:
       } data;
       Node *child;
     } comp;
+    uint8_t entry_type; //0 means empty, 1 means child, 2 means data
   };
-  struct Node : OptLock {
+  struct Node {
     int is_two;            // is special node for only two keys
     int build_size;        // tree size (include sub nodes) when node created
     std::atomic<int> size; // current subtree size
@@ -546,9 +407,6 @@ private:
     // int num_items;
     LinearModel<T> model;
     Item *items;
-    bitmap_t *none_bitmap; // 1 means empty entry, 0 means Data or Child
-    bitmap_t
-        *child_bitmap; // 1 means Child. will always be 0 when none_bitmap is 1
   };
 
   Node *root;
@@ -558,11 +416,6 @@ private:
   std::allocator<Node> node_allocator;
   Node *new_nodes(int n) {
     Node *p = node_allocator.allocate(n);
-    for (int i = 0; i < n; ++i) {
-      p[i].typeVersionLockObsolete.store(0b100);
-      // lock->typeVersionLockObsolete.store(0b100);
-    }
-
     RT_ASSERT(p != NULL && p != (Node *)(-1));
     return p;
   }
@@ -575,14 +428,11 @@ private:
           reinterpret_cast<std::pair<LIPP *, Node *> *>(pointer);
       auto my_tree = ptr->first;
       auto node = ptr->second;
+      // for(int i = 0; i < node->num_items; i++) node->items[i].writeUnlock();
       if (node->is_two) {
-        node->writeUnlock();
         my_tree->pending_two[omp_get_thread_num()].push(node);
       } else {
         my_tree->delete_items(node->items, node->num_items);
-        const int bitmap_size = BITMAP_SIZE(node->num_items);
-        my_tree->delete_bitmap(node->none_bitmap, bitmap_size);
-        my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
         my_tree->delete_nodes(node, 1);
       }
       delete ptr;
@@ -601,18 +451,14 @@ private:
   std::allocator<Item> item_allocator;
   Item *new_items(int n) {
     Item *p = item_allocator.allocate(n);
+    for (int i = 0; i < n; ++i) {
+      p[i].typeVersionLockObsolete.store(0b100);
+      p[i].entry_type = 0;
+    }
     RT_ASSERT(p != NULL && p != (Item *)(-1));
     return p;
   }
   void delete_items(Item *p, int n) { item_allocator.deallocate(p, n); }
-
-  std::allocator<bitmap_t> bitmap_allocator;
-  bitmap_t *new_bitmap(int n) {
-    bitmap_t *p = bitmap_allocator.allocate(n);
-    RT_ASSERT(p != NULL && p != (bitmap_t *)(-1));
-    return p;
-  }
-  void delete_bitmap(bitmap_t *p, int n) { bitmap_allocator.deallocate(p, n); }
 
   /// build an empty tree
   Node *build_tree_none() {
@@ -625,11 +471,7 @@ private:
     node->num_items = 1;
     node->model.a = node->model.b = 0;
     node->items = new_items(1);
-    node->none_bitmap = new_bitmap(1);
-    node->none_bitmap[0] = 0;
-    BITMAP_SET(node->none_bitmap, 0);
-    node->child_bitmap = new_bitmap(1);
-    node->child_bitmap[0] = 0;
+    node->items[0].entry_type = 0;
     return node;
   }
   /// build a tree with two keys
@@ -638,8 +480,8 @@ private:
       std::swap(key1, key2);
       std::swap(value1, value2);
     }
+    // printf("%d, %d\n", key1, key2);
     RT_ASSERT(key1 < key2);
-    static_assert(BITMAP_WIDTH == 8);
 
     Node *node = NULL;
     if (pending_two[omp_get_thread_num()].empty()) {
@@ -652,10 +494,6 @@ private:
 
       node->num_items = 8;
       node->items = new_items(node->num_items);
-      node->none_bitmap = new_bitmap(1);
-      node->child_bitmap = new_bitmap(1);
-      node->none_bitmap[0] = 0xff;
-      node->child_bitmap[0] = 0;
     } else {
       node = pending_two[omp_get_thread_num()].top();
       pending_two[omp_get_thread_num()].pop();
@@ -674,15 +512,15 @@ private:
 
     { // insert key1&value1
       int pos = PREDICT_POS(node, key1);
-      RT_ASSERT(BITMAP_GET(node->none_bitmap, pos) == 1);
-      BITMAP_CLEAR(node->none_bitmap, pos);
+      RT_ASSERT(node->items[pos].entry_type == 0);
+      node->items[pos].entry_type = 2;
       node->items[pos].comp.data.key = key1;
       node->items[pos].comp.data.value = value1;
     }
     { // insert key2&value2
       int pos = PREDICT_POS(node, key2);
-      RT_ASSERT(BITMAP_GET(node->none_bitmap, pos) == 1);
-      BITMAP_CLEAR(node->none_bitmap, pos);
+      RT_ASSERT(node->items[pos].entry_type == 0);
+      node->items[pos].entry_type = 2;
       node->items[pos].comp.data.key = key2;
       node->items[pos].comp.data.value = value2;
     }
@@ -776,11 +614,6 @@ private:
         }
 
         node->items = new_items(node->num_items);
-        const int bitmap_size = BITMAP_SIZE(node->num_items);
-        node->none_bitmap = new_bitmap(bitmap_size);
-        node->child_bitmap = new_bitmap(bitmap_size);
-        memset(node->none_bitmap, 0xff, sizeof(bitmap_t) * bitmap_size);
-        memset(node->child_bitmap, 0, sizeof(bitmap_t) * bitmap_size);
 
         for (int item_i = PREDICT_POS(node, keys[0]), offset = 0;
              offset < size;) {
@@ -794,13 +627,12 @@ private:
             }
           }
           if (next == offset + 1) {
-            BITMAP_CLEAR(node->none_bitmap, item_i);
+            node->items[item_i].entry_type = 2;
             node->items[item_i].comp.data.key = keys[offset];
             node->items[item_i].comp.data.value = values[offset];
           } else {
             // ASSERT(next - offset <= (size+2) / 3);
-            BITMAP_CLEAR(node->none_bitmap, item_i);
-            BITMAP_SET(node->child_bitmap, item_i);
+            node->items[item_i].entry_type = 1;
             node->items[item_i].comp.child = new_nodes(1);
             s.push((Segment){begin + offset, begin + next, level + 1,
                              node->items[item_i].comp.child});
@@ -944,11 +776,6 @@ private:
         }
 
         node->items = new_items(node->num_items);
-        const int bitmap_size = BITMAP_SIZE(node->num_items);
-        node->none_bitmap = new_bitmap(bitmap_size);
-        node->child_bitmap = new_bitmap(bitmap_size);
-        memset(node->none_bitmap, 0xff, sizeof(bitmap_t) * bitmap_size);
-        memset(node->child_bitmap, 0, sizeof(bitmap_t) * bitmap_size);
 
         for (int item_i = PREDICT_POS(node, keys[0]), offset = 0;
              offset < size;) {
@@ -962,13 +789,12 @@ private:
             }
           }
           if (next == offset + 1) {
-            BITMAP_CLEAR(node->none_bitmap, item_i);
+            node->items[item_i].entry_type = 2;
             node->items[item_i].comp.data.key = keys[offset];
             node->items[item_i].comp.data.value = values[offset];
           } else {
-            // ASSERT(next - offset <= (size+2) / 3);
-            BITMAP_CLEAR(node->none_bitmap, item_i);
-            BITMAP_SET(node->child_bitmap, item_i);
+            // RT_ASSERT(next - offset <= (size+2) / 3);
+            node->items[item_i].entry_type = 1;
             node->items[item_i].comp.child = new_nodes(1);
             s.push((Segment){begin + offset, begin + next, level + 1,
                              node->items[item_i].comp.child});
@@ -993,9 +819,6 @@ private:
         pending_two[i].pop();
 
         delete_items(node->items, node->num_items);
-        const int bitmap_size = BITMAP_SIZE(node->num_items);
-        delete_bitmap(node->none_bitmap, bitmap_size);
-        delete_bitmap(node->child_bitmap, bitmap_size);
         delete_nodes(node, 1);
       }
     }
@@ -1009,7 +832,7 @@ private:
       s.pop();
 
       for (int i = 0; i < node->num_items; i++) {
-        if (BITMAP_GET(node->child_bitmap, i) == 1) {
+        if (node->items[i].entry_type == 1) {
           s.push(node->items[i].comp.child);
         }
       }
@@ -1019,14 +842,10 @@ private:
         RT_ASSERT(node->num_items == 8);
         node->size = 2;
         node->num_inserts = node->num_insert_to_data = 0;
-        node->none_bitmap[0] = 0xff;
-        node->child_bitmap[0] = 0;
+        for(int i = 0; i < node->num_items; i++) node->items[i].entry_type = 0;
         pending_two[omp_get_thread_num()].push(node);
       } else {
         delete_items(node->items, node->num_items);
-        const int bitmap_size = BITMAP_SIZE(node->num_items);
-        delete_bitmap(node->none_bitmap, bitmap_size);
-        delete_bitmap(node->child_bitmap, bitmap_size);
         delete_nodes(node, 1);
       }
     }
@@ -1034,53 +853,36 @@ private:
 
   int scan_and_destory_tree(
       Node *_subroot, T **keys, P **values, // keys here is ptr to ptr
-      bool destory = true) { 
+      bool destory = true) {
 
     std::list<Node *> bfs;
-    std::list<Node *> lockedNodes;
-
-    RT_DEBUG(
-        "ADJUST: PHASE 1: BFS all sub tree locks rooted at %p, with %d keys",
-        _subroot, _subroot->size.load());
+    std::list<Item *> lockedItems;
 
     bfs.push_back(_subroot);
+    bool needRestart = false;
 
     while (!bfs.empty()) {
       Node *node = bfs.front();
       bfs.pop_front();
 
-      bool needRestart = false;
-      node->writeLockOrRestart(needRestart);
-      if (needRestart) {
-        // release locks on all locked ancestors
-        RT_DEBUG("ADJUST: Xlock %p fail, unlocking all locked", node);
-        for (auto &n : lockedNodes) {
-          n->writeUnlock();
-        }
-
-        return -1;
-      }
-      // x-lock this node SUCCESS
-      lockedNodes.push_back(node);
-
-      RT_DEBUG("ADJUST: Xlock OK on node=%p", node);
-
       for (int i = 0; i < node->num_items;
            i++) { // the i-th entry of the node now
-
-        if (BITMAP_GET(node->none_bitmap, i) ==
-            0) { // it has data/child; not empty entry
-          if (BITMAP_GET(node->child_bitmap, i) == 1) { // means it is a child
-            bfs.push_back(node->items[i].comp.child);
-            RT_DEBUG("ADJUST: BFS pushed to stack %p",
-                     node->items[i].comp.child);
+        node->items[i].writeLockOrRestart(needRestart);
+        if (needRestart) {
+          // release locks on all locked items
+          for (auto &n : lockedItems) {
+            n->writeUnlock();
           }
+          return -1;
+        }
+        lockedItems.push_back(&(node->items[i]));
+
+        if (node->items[i].entry_type == 1) { // child
+          bfs.push_back(node->items[i].comp.child);
         }
       }
     } // end while
 
-    RT_DEBUG("ADJUST: BFS locks all granted. **PHASE 2: now",
-             0); // as it must contain at least 1 arg after comma
     typedef std::pair<int, Node *> Segment; // <begin, Node*>
     std::stack<Segment> s;
     s.push(Segment(0, _subroot));
@@ -1103,27 +905,22 @@ private:
 
       for (int i = 0; i < node->num_items;
            i++) { // the i-th entry of the node now
-
-        if (BITMAP_GET(node->none_bitmap, i) ==
-            0) { // it has data/child; not empty entry
-          if (BITMAP_GET(node->child_bitmap, i) == 0) { // means it is a data
-            (*keys)[begin] = node->items[i].comp.data.key;
-            (*values)[begin] = node->items[i].comp.data.value;
-            begin++;
-            tmpnumkey++;
-          } else {
-            RT_DEBUG("ADJUST: so far %d keys collected in this node",
-                     tmpnumkey);
-            s.push(Segment(begin,
-                           node->items[i].comp.child)); // means it is a child
-            RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at child %p> of "
-                     "size %d to stack",
-                     begin, node->items[i].comp.child,
-                     node->items[i].comp.child->size.load());
-            begin += node->items[i].comp.child->size;
-            RT_DEBUG("ADJUST: begin is updated to=%d", begin);
-          }
-        } else { // this i-th entry is empty
+        if (node->items[i].entry_type == 2) { // means it is a data
+          (*keys)[begin] = node->items[i].comp.data.key;
+          (*values)[begin] = node->items[i].comp.data.value;
+          begin++;
+          tmpnumkey++;
+        } else if (node->items[i].entry_type == 1) {
+          RT_DEBUG("ADJUST: so far %d keys collected in this node",
+                    tmpnumkey);
+          s.push(Segment(begin,
+                          node->items[i].comp.child)); // means it is a child
+          RT_DEBUG("ADJUST: also pushed <begin=%d, a subtree at child %p> of "
+                    "size %d to stack",
+                    begin, node->items[i].comp.child,
+                    node->items[i].comp.child->size.load());
+          begin += node->items[i].comp.child->size;
+          RT_DEBUG("ADJUST: begin is updated to=%d", begin);
         }
       }
 
@@ -1143,19 +940,8 @@ private:
           RT_ASSERT(node->num_items == 8);
           node->size = 2;
           node->num_inserts = node->num_insert_to_data = 0;
-          node->none_bitmap[0] = 0xff;
-          node->child_bitmap[0] = 0;
-          // node->writeUnlock();
-          // pending_two[omp_get_thread_num()].push(node);
           safe_delete_nodes(node, 1);
         } else {
-          /*
-          delete_items(node->items, node->num_items);
-          const int bitmap_size = BITMAP_SIZE(node->num_items);
-          delete_bitmap(node->none_bitmap, bitmap_size);
-          delete_bitmap(node->child_bitmap, bitmap_size);
-          delete_nodes(node, 1);
-          */
           safe_delete_nodes(node, 1);
         }
       }
@@ -1177,46 +963,46 @@ private:
     int insert_to_data = 0;
 
     // for lock coupling
-    Node *parent = nullptr;
-    uint64_t versionParent;
+    uint64_t versionItem;
+    Node *parent;
 
     for (Node *node = root;;) {
       // R-lock this node
-      uint64_t versionNode = node->readLockOrRestart(needRestart);
-      if (needRestart)
-        goto restart;
 
       RT_ASSERT(path_size < MAX_DEPTH);
       path[path_size++] = node;
 
       int pos = PREDICT_POS(node, key);
-
-      if (BITMAP_GET(node->none_bitmap, pos) == 1) // 1 means empty entry
+      versionItem = node->items[pos].readLockOrRestart(needRestart);
+      if (needRestart)
+        goto restart;
+      if (node->items[pos].entry_type == 0) // 0 means empty entry
       {
-        node->upgradeToWriteLockOrRestart(versionNode, needRestart);
+        RT_DEBUG("Empty %p pos %d, locking.", node, pos);
+        node->items[pos].upgradeToWriteLockOrRestart(versionItem, needRestart);
         if (needRestart) {
           goto restart;
         }
 
-        BITMAP_CLEAR(node->none_bitmap, pos);
+        node->items[pos].entry_type = 2;
         node->items[pos].comp.data.key = key;
         node->items[pos].comp.data.value = value;
 
         RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
 
-        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
-                      // other threads can't carry out adjust
+        node->items[pos].writeUnlock();
 
         break;
-      } else if (BITMAP_GET(node->child_bitmap, pos) ==
-                 0) // 0 means existing entry has data already
+      } else if (node->items[pos].entry_type == 2) // 2 means existing entry has data already
       {
-        node->upgradeToWriteLockOrRestart(versionNode, needRestart);
+        RT_DEBUG("Existed %p pos %d, locking.", node, pos);
+        node->items[pos].upgradeToWriteLockOrRestart(versionItem, needRestart);
         if (needRestart) {
           goto restart;
         }
 
-        BITMAP_SET(node->child_bitmap, pos);
+        node->items[pos].entry_type = 1;
+        // printf("%d, %d\n", key, node->items[pos].comp.data.key);
         node->items[pos].comp.child =
             build_tree_two(key, value, node->items[pos].comp.data.key,
                            node->items[pos].comp.data.value);
@@ -1224,23 +1010,18 @@ private:
 
         RT_DEBUG("Key %d inserted into node %p.  Unlock", key, node);
 
-        node->writeUnlock(); // X-UNLOCK this node; as long as 1 node is locked,
-                      // other threads can't carry out adjust
+        node->items[pos].writeUnlock();
         
         break;
       } else // 1 means has a child, need to go down and see
       {
-        // set parent=<current inner node>, and set node=<child-node>
         parent = node;
-        versionParent = versionNode;
-        
+        // RT_DEBUG("Child %p pos %d.", node, pos);
         node = node->items[pos].comp.child;           // now: node is the child
 
-        parent->checkOrRestart(
-            versionParent, needRestart); // to ensure nobody else has modified
-                                         // the new parent in between
+        parent->items[pos].readUnlockOrRestart(versionItem, needRestart);
         if (needRestart)
-          goto restart; // if child is locked by another thread, restart
+          goto restart;
       }
     }
 
@@ -1248,10 +1029,6 @@ private:
       path[i]->num_insert_to_data += insert_to_data;
       path[i]->num_inserts++;
       path[i]->size++;
-      RT_DEBUG("Post insert(%d): update per node stat: %p size=%d, "
-                "num_insert=%d, num_insert_to_data=%d",
-                key, path[i], path[i]->size.load(), path[i]->num_inserts,
-                path[i]->num_insert_to_data);
     }
 
     //***** so, when reaching here, no node is locked.
@@ -1263,8 +1040,6 @@ private:
       const bool need_rebuild =
           node->fixed == 0 && node->size >= node->build_size * 4 &&
           node->size >= 64 && num_insert_to_data * 10 >= num_inserts;
-
-      // const bool need_rebuild = false; //@Poh: comment and uncomment above and here
 
       if (need_rebuild) {
         // const int ESIZE = node->size; //race here
@@ -1332,7 +1107,7 @@ private:
 
           bool needRetry = false;
 
-          path[i - 1]->writeLockOrRestart(needRetry);
+          path[i - 1]->items[pos].writeLockOrRestart(needRetry);
           if (needRetry) {
             RT_DEBUG("Final step of adjust, obtain parent %p lock FAIL, retry",
                      path[i - 1]);
@@ -1342,7 +1117,7 @@ private:
                    "the adjusted tree to parent",
                    path[i - 1]);
           path[i - 1]->items[pos].comp.child = new_node;
-          path[i - 1]->writeUnlock();
+          path[i - 1]->items[pos].writeUnlock();
           adjustsuccess++;
           RT_DEBUG("Adjusted success=%d", adjustsuccess);
         } else { // new node is the root, need to update it
@@ -1359,3 +1134,5 @@ private:
 };
 
 }
+
+#endif
