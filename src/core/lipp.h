@@ -428,8 +428,11 @@ private:
           reinterpret_cast<std::pair<LIPP *, Node *> *>(pointer);
       auto my_tree = ptr->first;
       auto node = ptr->second;
-      // for(int i = 0; i < node->num_items; i++) node->items[i].writeUnlock();
       if (node->is_two) {
+        node->size = 2;
+        node->num_inserts = node->num_insert_to_data = 0;
+        for(int i = 0; i < node->num_items; i++) node->items[i].typeVersionLockObsolete.store(0b100);
+        for(int i = 0; i < node->num_items; i++) node->items[i].entry_type = 0;
         my_tree->pending_two[omp_get_thread_num()].push(node);
       } else {
         my_tree->delete_items(node->items, node->num_items);
@@ -842,6 +845,7 @@ private:
         RT_ASSERT(node->num_items == 8);
         node->size = 2;
         node->num_inserts = node->num_insert_to_data = 0;
+        for(int i = 0; i < node->num_items; i++) node->items[i].typeVersionLockObsolete.store(0b100);;
         for(int i = 0; i < node->num_items; i++) node->items[i].entry_type = 0;
         pending_two[omp_get_thread_num()].push(node);
       } else {
