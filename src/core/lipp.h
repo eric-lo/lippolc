@@ -871,13 +871,18 @@ private:
 
       for (int i = 0; i < node->num_items;
            i++) { // the i-th entry of the node now
+      int retryAdjustCount = 0;
+      retryAdjust:
+        if (retryAdjustCount++)
+          yield(retryAdjustCount);
         node->items[i].writeLockOrRestart(needRestart);
         if (needRestart) {
-          // release locks on all locked items
-          for (auto &n : lockedItems) {
-            n->writeUnlock();
-          }
-          return -1;
+          // // release locks on all locked items
+          // for (auto &n : lockedItems) {
+          //   n->writeUnlock();
+          // }
+          // return -1;
+          goto retryAdjust;
         }
         lockedItems.push_back(&(node->items[i]));
 
@@ -1046,6 +1051,7 @@ private:
           node->size >= 64 && num_insert_to_data * 10 >= num_inserts;
 
       if (need_rebuild) {
+        printf("rebuilding\n");
         // const int ESIZE = node->size; //race here
         // T *keys = new T[ESIZE];
         // P *values = new P[ESIZE];
@@ -1059,17 +1065,17 @@ private:
 
         int numKeysCollected = scan_and_destory_tree(
             node, &keys, &values); // pass the (address) of the ptr
-        if (numKeysCollected < 0) {
-          for (int x = 0; x < numKeysCollected; x++) {
-            delete &keys[x]; // keys[x] stores keys
-            delete &values[x];
-          }
-          RT_DEBUG("collectKey for adjusting node %p -- one Xlock fails; quit "
-                   "rebuild",
-                   node);
-          break; // give up rebuild on this node (most likely other threads have
-                 // done it for you already)
-        }
+        // if (numKeysCollected < 0) {
+        //   for (int x = 0; x < numKeysCollected; x++) {
+        //     delete &keys[x]; // keys[x] stores keys
+        //     delete &values[x];
+        //   }
+        //   RT_DEBUG("collectKey for adjusting node %p -- one Xlock fails; quit "
+        //            "rebuild",
+        //            node);
+        //   break; // give up rebuild on this node (most likely other threads have
+        //          // done it for you already)
+        // }
 #if COLLECT_TIME
         auto end_time_scan = std::chrono::high_resolution_clock::now();
         auto duration_scan = end_time_scan - start_time_scan;
@@ -1127,7 +1133,7 @@ private:
         } else { // new node is the root, need to update it
           root = new_node;
         }
-
+        printf("end rebuild\n");
         break; // break out for the for loop
       }        // end REBUILD
     }          // end for
