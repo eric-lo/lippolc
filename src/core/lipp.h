@@ -20,6 +20,8 @@
 #include <thread>
 #include <vector>
 
+namespace lippolc {
+
 // runtime assert
 #define RT_ASSERT(expr)                                                        \
   {                                                                            \
@@ -33,9 +35,9 @@
 typedef void (*dealloc_func)(void *ptr);
 
 // runtime debug
-#define DEBUG 0
+#define PRINT_DEBUG 0
 
-#if DEBUG
+#if PRINT_DEBUG
 #define RESET "\033[0m"
 #define RED "\033[31m"     /* Red */
 #define GREEN "\033[32m"   /* Green */
@@ -64,8 +66,6 @@ typedef void (*dealloc_func)(void *ptr);
 #if COLLECT_TIME
 #include <chrono>
 #endif
-
-namespace lippolc {
 
 template <class T, class P, bool USE_FMCD = true> class LIPP {
   static_assert(std::is_arithmetic<T>::value, "LIPP key type must be numeric.");
