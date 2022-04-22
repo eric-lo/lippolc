@@ -286,7 +286,7 @@ public:
     RT_DEBUG("Insert_tree(%d): success/fail? %d", key, state);
   }
 
-  P at(const T &key) {
+  bool at(const T &key, P &value) {
     EpochGuard guard;
     int restartCount = 0;
   restart:
@@ -313,14 +313,15 @@ public:
           goto restart;
       } else { // the entry is a data or empty
         if (node->items[pos].entry_type == 0) { // 0 means empty
-          RT_ASSERT(false);
+          return false;
         } else { // 2 means data
           node->items[pos].readUnlockOrRestart(versionItem, needRestart);
           if (needRestart)
             goto restart;
 
           RT_ASSERT(node->items[pos].comp.data.key == key);
-          return node->items[pos].comp.data.value;
+          value = node->items[pos].comp.data.value;
+          return true;
         }
       }
     }
@@ -382,6 +383,67 @@ public:
     root = build_tree_bulk(keys, values, num_keys);
     delete[] keys;
     delete[] values;
+  }
+
+  bool remove(const T &key) {
+    int restartCount = 0; 
+  restart:
+    if (restartCount++)
+      yield(restartCount);
+    bool needRestart = false;
+
+    constexpr int MAX_DEPTH = 128;
+    Node *path[MAX_DEPTH];
+    int path_size = 0;
+
+    // for lock coupling
+    uint64_t versionItem;
+    Node *parent;
+
+    for (Node *node = root;;) {
+      // R-lock this node
+
+      RT_ASSERT(path_size < MAX_DEPTH);
+      path[path_size++] = node;
+
+      int pos = PREDICT_POS(node, key);
+      versionItem = node->items[pos].readLockOrRestart(needRestart);
+      if (needRestart)
+        goto restart;
+      if (node->items[pos].entry_type == 0) // 0 means empty entry
+      {
+        return false;
+      } else if (node->items[pos].entry_type == 2) // 2 means existing entry has data already
+      {
+        RT_DEBUG("Existed %p pos %d, locking.", node, pos);
+        node->items[pos].upgradeToWriteLockOrRestart(versionItem, needRestart);
+        if (needRestart) {
+          goto restart;
+        }
+
+        node->items[pos].entry_type = 0;
+
+        node->items[pos].writeUnlock();
+        
+        break;
+      } else // 1 means has a child, need to go down and see
+      {
+        parent = node;
+        node = node->items[pos].comp.child;           // now: node is the child
+
+        parent->items[pos].readUnlockOrRestart(versionItem, needRestart);
+        if (needRestart)
+          goto restart;
+      }
+    }
+
+    for (int i = 0; i < path_size; i++) {
+      path[i]->num_insert_to_data--;
+      path[i]->num_inserts--;
+      path[i]->size--;
+    }
+
+    return true;
   }
 
 private:
@@ -1042,7 +1104,7 @@ private:
       const int num_inserts = node->num_inserts;
       const int num_insert_to_data = node->num_insert_to_data;
       const bool need_rebuild =
-          node->fixed == 0 && node->size >= node->build_size * 4 &&
+          node->fixed == 0 && node->size >= node->build_size * 2 &&
           node->size >= 64 && num_insert_to_data * 10 >= num_inserts;
 
       if (need_rebuild) {
@@ -1135,6 +1197,7 @@ private:
     // return path[0];
     return true;
   } // end of insert_tree
+
 };
 
 }
