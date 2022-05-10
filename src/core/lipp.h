@@ -446,6 +446,54 @@ public:
     return true;
   }
 
+  bool update(const T &key, const P& value) {
+    int restartCount = 0; 
+  restart:
+    if (restartCount++)
+      yield(restartCount);
+    bool needRestart = false;
+
+    // for lock coupling
+    uint64_t versionItem;
+    Node *parent;
+
+    for (Node *node = root;;) {
+      // R-lock this node
+
+      int pos = PREDICT_POS(node, key);
+      versionItem = node->items[pos].readLockOrRestart(needRestart);
+      if (needRestart)
+        goto restart;
+      if (node->items[pos].entry_type == 0) // 0 means empty entry
+      {
+        return false;
+      } else if (node->items[pos].entry_type == 2) // 2 means existing entry has data already
+      {
+        RT_DEBUG("Existed %p pos %d, locking.", node, pos);
+        node->items[pos].upgradeToWriteLockOrRestart(versionItem, needRestart);
+        if (needRestart) {
+          goto restart;
+        }
+
+        node->items[pos].comp.data.value = value;
+
+        node->items[pos].writeUnlock();
+        
+        break;
+      } else // 1 means has a child, need to go down and see
+      {
+        parent = node;
+        node = node->items[pos].comp.child;           // now: node is the child
+
+        parent->items[pos].readUnlockOrRestart(versionItem, needRestart);
+        if (needRestart)
+          goto restart;
+      }
+    }
+
+    return true;
+  }
+
 private:
   struct Node;
   struct Item : OptLock {
