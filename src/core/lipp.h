@@ -107,16 +107,16 @@ public:
   // Epoch based Memory Reclaim
   class ThreadSpecificEpochBasedReclamationInformation {
 
-    // std::array<std::vector<void *>, 3> mFreeLists;
-    std::array<std::vector<std::pair<void *, dealloc_func>>, 3> mFreeLists;
+    std::array<std::vector<Node *>, 3> mFreeLists;
     std::atomic<uint32_t> mLocalEpoch;
     uint32_t mPreviouslyAccessedEpoch;
     bool mThreadWantsToAdvance;
+    LIPP<T, P> *tree; 
 
   public:
-    ThreadSpecificEpochBasedReclamationInformation()
+    ThreadSpecificEpochBasedReclamationInformation(LIPP<T, P> *index)
         : mFreeLists(), mLocalEpoch(3), mPreviouslyAccessedEpoch(3),
-          mThreadWantsToAdvance(false) {}
+          mThreadWantsToAdvance(false), tree(index) {}
 
     ThreadSpecificEpochBasedReclamationInformation(
         ThreadSpecificEpochBasedReclamationInformation const &other) = delete;
@@ -130,11 +130,11 @@ public:
       }
     }
 
-    void scheduleForDeletion(std::pair<void *, dealloc_func> func_pair) {
+    void scheduleForDeletion(Node *pointer) {
       assert(mLocalEpoch != 3);
-      std::vector<std::pair<void *, dealloc_func>> &currentFreeList =
+      std::vector<Node *> &currentFreeList =
           mFreeLists[mLocalEpoch];
-      currentFreeList.emplace_back(func_pair);
+      currentFreeList.emplace_back(pointer);
       mThreadWantsToAdvance = (currentFreeList.size() % 64u) == 0;
     }
 
@@ -158,19 +158,19 @@ public:
 
   private:
     void freeForEpoch(uint32_t epoch) {
-      std::vector<std::pair<void *, dealloc_func>> &previousFreeList =
+      std::vector<Node *> &previousFreeList =
           mFreeLists[epoch];
-      // for (void *pointer : previousFreeList) {
-      for (std::pair<void *, dealloc_func> func_pair : previousFreeList) {
-        func_pair.second(func_pair.first);
-        /*
-        auto node = reinterpret_cast<Node *>(pointer);
-        my_tree->delete_items(node->items, node->num_items);
-        const int bitmap_size = BITMAP_SIZE(node->num_items);
-        my_tree->delete_bitmap(node->none_bitmap, bitmap_size);
-        my_tree->delete_bitmap(node->child_bitmap, bitmap_size);
-        my_tree->delete_nodes(node, 1);
-        */
+      for (Node *node : previousFreeList) {
+        if (node->is_two) {
+          node->size = 2;
+          node->num_inserts = node->num_insert_to_data = 0;
+          for(int i = 0; i < node->num_items; i++) node->items[i].typeVersionLockObsolete.store(0b100);
+          for(int i = 0; i < node->num_items; i++) node->items[i].entry_type = 0;
+          tree->pending_two[omp_get_thread_num()].push(node);
+        } else {
+          tree->delete_items(node->items, node->num_items);
+          tree->delete_nodes(node, 1);
+        }
       }
       previousFreeList.resize(0u);
     }
@@ -190,12 +190,12 @@ public:
         mThreadSpecificInformations;
 
   private:
-    EpochBasedMemoryReclamationStrategy()
-        : mCurrentEpoch(0), mThreadSpecificInformations() {}
+    EpochBasedMemoryReclamationStrategy(LIPP<T, P> *index)
+        : mCurrentEpoch(0), mThreadSpecificInformations(index) {}
 
   public:
-    static EpochBasedMemoryReclamationStrategy *getInstance() {
-      static EpochBasedMemoryReclamationStrategy instance;
+    static EpochBasedMemoryReclamationStrategy *getInstance(LIPP<T, P> *index) {
+      static EpochBasedMemoryReclamationStrategy instance(index);
       return &instance;
     }
 
@@ -228,8 +228,8 @@ public:
       currentMemoryInformation.leave();
     }
 
-    void scheduleForDeletion(std::pair<void *, dealloc_func> func_pair) {
-      mThreadSpecificInformations.local().scheduleForDeletion(func_pair);
+    void scheduleForDeletion(Node *pointer) {
+      mThreadSpecificInformations.local().scheduleForDeletion(pointer);
     }
   };
 
@@ -237,8 +237,8 @@ public:
     EpochBasedMemoryReclamationStrategy *instance;
 
   public:
-    EpochGuard() {
-      instance = EpochBasedMemoryReclamationStrategy::getInstance();
+    EpochGuard(LIPP<T, P> *index) {
+      instance = EpochBasedMemoryReclamationStrategy::getInstance(index);
       instance->enterCriticalSection();
     }
 
@@ -270,7 +270,7 @@ public:
     }
 
     root = build_tree_none();
-    ebr = EpochBasedMemoryReclamationStrategy::getInstance();
+    ebr = EpochBasedMemoryReclamationStrategy::getInstance(this);
   }
   ~LIPP() {
     destroy_tree(root);
@@ -280,14 +280,14 @@ public:
 
   void insert(const V &v) { insert(v.first, v.second); }
   void insert(const T &key, const P &value) {
-    EpochGuard guard;
+    EpochGuard guard(this);
     // root = insert_tree(root, key, value);
     bool state = insert_tree(key, value);
     RT_DEBUG("Insert_tree(%d): success/fail? %d", key, state);
   }
 
   bool at(const T &key, P &value) {
-    EpochGuard guard;
+    EpochGuard guard(this);
     int restartCount = 0;
   restart:
     if (restartCount++)
@@ -328,7 +328,7 @@ public:
   }
 
   bool exists(const T &key) const {
-    EpochGuard guard;
+    // EpochGuard guard;
     Node *node = root;
     while (true) {
       int pos = PREDICT_POS(node, key);
@@ -386,6 +386,7 @@ public:
   }
 
   bool remove(const T &key) {
+    EpochGuard guard(this);
     int restartCount = 0; 
   restart:
     if (restartCount++)
@@ -399,8 +400,9 @@ public:
     // for lock coupling
     uint64_t versionItem;
     Node *parent;
+    Node *node = root;
 
-    for (Node *node = root;;) {
+    while (true) {
       // R-lock this node
 
       RT_ASSERT(path_size < MAX_DEPTH);
@@ -424,8 +426,28 @@ public:
         node->items[pos].entry_type = 0;
 
         node->items[pos].writeUnlock();
-        
-        break;
+
+        for (int i = 0; i < path_size; i++) {
+          path[i]->size--;
+        }
+        if(node->size == 0) {
+          int parent_pos = PREDICT_POS(parent, key);
+          restartCount = 0;
+        deleteNodeRemove:
+          bool deleteNodeRestart = false;
+          if (restartCount++)
+            yield(restartCount);
+          parent->items[parent_pos].writeLockOrRestart(deleteNodeRestart);
+          if(deleteNodeRestart) goto deleteNodeRemove;
+
+          parent->items[parent_pos].entry_type = 0;
+
+          parent->items[parent_pos].writeUnlock();
+
+          safe_delete_nodes(node, 1);
+
+        }
+        return true;
       } else // 1 means has a child, need to go down and see
       {
         parent = node;
@@ -437,16 +459,10 @@ public:
       }
     }
 
-    for (int i = 0; i < path_size; i++) {
-      path[i]->num_insert_to_data--;
-      path[i]->num_inserts--;
-      path[i]->size--;
-    }
-
-    return true;
   }
 
   bool update(const T &key, const P& value) {
+    EpochGuard guard(this);
     int restartCount = 0; 
   restart:
     if (restartCount++)
@@ -494,6 +510,25 @@ public:
     return true;
   }
 
+  size_t total_size() const {
+    std::stack < Node * > s;
+    s.push(root);
+
+    size_t size = 0;
+    while (!s.empty()) {
+      Node *node = s.top();
+      s.pop();
+      size += sizeof(*node);
+      for (int i = 0; i < node->num_items; i++) {
+        size += sizeof(Item);
+        if (node->items[i].entry_type == 1) {
+          s.push(node->items[i].comp.child);
+        }
+      }
+    }
+    return size;
+  }
+
 private:
   struct Node;
   struct Item : OptLock {
@@ -533,32 +568,9 @@ private:
   void delete_nodes(Node *p, int n) { node_allocator.deallocate(p, n); }
 
   void safe_delete_nodes(Node *p, int n) {
-    auto callback = [](void *pointer) {
-      std::pair<LIPP *, Node *> *ptr =
-          reinterpret_cast<std::pair<LIPP *, Node *> *>(pointer);
-      auto my_tree = ptr->first;
-      auto node = ptr->second;
-      if (node->is_two) {
-        node->size = 2;
-        node->num_inserts = node->num_insert_to_data = 0;
-        for(int i = 0; i < node->num_items; i++) node->items[i].typeVersionLockObsolete.store(0b100);
-        for(int i = 0; i < node->num_items; i++) node->items[i].entry_type = 0;
-        my_tree->pending_two[omp_get_thread_num()].push(node);
-      } else {
-        my_tree->delete_items(node->items, node->num_items);
-        my_tree->delete_nodes(node, 1);
-      }
-      delete ptr;
-      return;
-    };
-
     for (int i = 0; i < n; ++i) {
-      auto ptr = new std::pair<LIPP *, Node *>(this, p);
-      ebr->scheduleForDeletion(
-          std::make_pair(reinterpret_cast<void *>(ptr), callback));
-      p = p + 1;
+      ebr->scheduleForDeletion(p + i);
     }
-    // node_allocator.deallocate(p, n);
   }
 
   std::allocator<Item> item_allocator;
